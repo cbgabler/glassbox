@@ -26,7 +26,7 @@ tools:
           type: "string"
           description: "Search query to perform on Google"
         max_results:
-          type: "integer"
+          type: "number"
           description: "Maximum number of results to return (default: 5)"
           default: 5
       
@@ -43,7 +43,7 @@ tools:
           type: "string"
           description: "Image search query"
         max_results:
-          type: "integer"
+          type: "number"
           description: "Maximum number of image results (default: 5)"
           default: 5
       
