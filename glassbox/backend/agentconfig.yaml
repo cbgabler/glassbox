@@ -3,11 +3,13 @@ agents:
     description: "An assistant to help me with various tasks, including coding, research, and general problem-solving."
     llm:
       model: claude-opus-4-5-20251101 
+      api_key: '${AGENT_API_KEY}'
       temperature: 0.7
       max_tokens: 3000
     servers:
-    server_generation: false
-    infra_generation: false
+      - 'C:\Users\antho\glassbox2\glassbox2\glassbox\backend\serverconfigs\googlesearchconfig.yaml'
+    server_generation: true
+    infra_generation: true
     
 
 

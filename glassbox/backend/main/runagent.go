@@ -15,6 +15,7 @@ import (
 	"github.com/AnthonyL103/GOMCP/protocol/parseagentprotocol"
 	"github.com/AnthonyL103/GOMCP/transport"
 	voicechat "github.com/AnthonyL103/GOMCP/voice"
+	"github.com/joho/godotenv"
 )
 
 // findModel determines which provider to use based on model name
@@ -65,6 +66,11 @@ func createProvider(ag *agent.Agent) (transport.Provider, error) {
 }
 
 func runagent() {
+	// Load environment variables from .env file
+	if err := godotenv.Load("../.env"); err != nil {
+		log.Println("No .env file found, using system environment variables")
+	}
+
 	// Parse agent config
 	ag, err := parseagentprotocol.ParseAgentConfig()
 	if err != nil {
