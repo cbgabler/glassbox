@@ -1,0 +1,54 @@
+# Server Configuration
+server_id: "schedule_server"
+description: "Provides anthony schedule and allows adding events"
+
+# Runtime configuration - ALWAYS required
+runtime:
+  type: "go"  # "python", "node", "go", "ruby", etc.
+  command: "go"
+  args: ['C:\Users\antho\GoMCP\examples\schedule_server.go']
+  port: 8081  # Port this server listens on
+
+# Tools provided by this server
+tools:
+  - tool_id: "schedule"
+    description: "Get current schedule for Anthonys"
+    handler: "get_schedule"
+    
+    input_schema:
+      properties:
+        password:
+          type: "string"
+          description: "Password to access schedule"
+      
+      required:
+        - password
+
+  - tool_id: "add_event"
+    description: "Add an event to Anthonys schedule"
+    handler: "add_event"
+    
+    input_schema:
+      properties:
+        password:
+          type: "string"
+          description: "Password to add events"
+        events:
+          type: "array"
+          description: "Array of event details with title and time"
+          items:
+            type: "object"
+            properties:
+              title:
+                type: "string"
+                description: "Event title"
+              time:
+                type: "string"
+                description: "Event time in ISO 8601 format"
+            required:
+              - title
+              - time
+      
+      required:
+        - password
+        - events

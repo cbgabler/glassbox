@@ -1,0 +1,51 @@
+# Google Search Server Configuration
+server_id: "google_search_server"
+description: "Provides Google search functionality for agent workflows"
+
+# Runtime configuration
+runtime:
+  type: "go"
+  command: "go"
+  args: ['C:\Users\antho\glassbox2\glassbox2\glassbox\backend\googlesearchserver\googlesearch.go']
+  port: 8082
+
+# Environment variables required
+env:
+  GOOGLE_API_KEY: "${GOOGLE_API_KEY}"  # Set this environment variable
+  GOOGLE_SEARCH_ENGINE_ID: "${GOOGLE_SEARCH_ENGINE_ID}"  # Set this environment variable
+
+# Tools provided by this server
+tools:
+  - tool_id: "google_search"
+    description: "Search Google for information on any topic"
+    handler: "search"
+    
+    input_schema:
+      properties:
+        query:
+          type: "string"
+          description: "Search query to perform on Google"
+        max_results:
+          type: "integer"
+          description: "Maximum number of results to return (default: 5)"
+          default: 5
+      
+      required:
+        - query
+
+  - tool_id: "google_search_images"
+    description: "Search Google Images"
+    handler: "search_images"
+    
+    input_schema:
+      properties:
+        query:
+          type: "string"
+          description: "Image search query"
+        max_results:
+          type: "integer"
+          description: "Maximum number of image results (default: 5)"
+          default: 5
+      
+      required:
+        - query

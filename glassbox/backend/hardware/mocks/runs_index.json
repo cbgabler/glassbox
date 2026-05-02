@@ -1,0 +1,274 @@
+{
+  "schema": "glassbox.runs_index.v1",
+  "fleet": {
+    "n_pods": 1,
+    "pod_ids": [
+      "pod-osu-001"
+    ]
+  },
+  "leaderboard": [
+    {
+      "library": "libsodium sodium_memcmp",
+      "verdict": "safe",
+      "score": 100
+    },
+    {
+      "library": "OpenSSL CRYPTO_memcmp",
+      "verdict": "safe",
+      "score": 100
+    },
+    {
+      "library": "POSIX memcmp",
+      "verdict": "leak_detected",
+      "score": 12
+    },
+    {
+      "library": "naive strcmp",
+      "verdict": "leak_detected",
+      "score": 0
+    },
+    {
+      "library": "AES SubBytes (table lookup)",
+      "verdict": "leak_detected",
+      "score": 35
+    }
+  ],
+  "runs": [
+    {
+      "id": "run_2026_0101",
+      "repo": "acme/login-service",
+      "commit_sha": "3f9a1c2",
+      "pr_number": 147,
+      "function": "password_check",
+      "verdict": "leak_detected",
+      "leak_channel": "cycles",
+      "leak_severity": "CRITICAL",
+      "leak_confidence": 0.94,
+      "n_traces": 1280,
+      "duration_s": 18.3,
+      "started_at": "2026-04-30T14:30:00Z",
+      "finished_at": "2026-04-30T14:30:18Z",
+      "quarantine_fired": true
+    },
+    {
+      "id": "run_2026_0100",
+      "repo": "acme/login-service",
+      "commit_sha": "2a1b8e7",
+      "pr_number": 147,
+      "function": "password_check",
+      "verdict": "safe",
+      "leak_channel": null,
+      "leak_severity": null,
+      "leak_confidence": 0.02,
+      "n_traces": 1280,
+      "duration_s": 17.9,
+      "started_at": "2026-04-30T14:25:00Z",
+      "finished_at": "2026-04-30T14:25:17Z",
+      "quarantine_fired": false
+    },
+    {
+      "id": "run_2026_0099",
+      "repo": "vault/crypto-utils",
+      "commit_sha": "d44eaf0",
+      "pr_number": 82,
+      "function": "hmac_compare",
+      "verdict": "leak_detected",
+      "leak_channel": "power",
+      "leak_severity": "HIGH",
+      "leak_confidence": 0.87,
+      "n_traces": 1024,
+      "duration_s": 14.6,
+      "started_at": "2026-04-30T13:58:00Z",
+      "finished_at": "2026-04-30T13:58:14Z",
+      "quarantine_fired": true
+    },
+    {
+      "id": "run_2026_0098",
+      "repo": "kettle/aes-mini",
+      "commit_sha": "bbb2104",
+      "pr_number": 12,
+      "function": "aes_sbox",
+      "verdict": "leak_detected",
+      "leak_channel": "power",
+      "leak_severity": "MEDIUM",
+      "leak_confidence": 0.71,
+      "n_traces": 4096,
+      "duration_s": 58.1,
+      "started_at": "2026-04-30T13:03:00Z",
+      "finished_at": "2026-04-30T13:03:58Z",
+      "quarantine_fired": false
+    },
+    {
+      "id": "run_2026_0097",
+      "repo": "vault/crypto-utils",
+      "commit_sha": "9e0aa11",
+      "pr_number": 81,
+      "function": "hmac_compare",
+      "verdict": "safe",
+      "leak_channel": null,
+      "leak_severity": null,
+      "leak_confidence": 0.04,
+      "n_traces": 1024,
+      "duration_s": 14.4,
+      "started_at": "2026-04-30T12:10:00Z",
+      "finished_at": "2026-04-30T12:10:14Z",
+      "quarantine_fired": false
+    },
+    {
+      "id": "run_2026_0096",
+      "repo": "kettle/aes-mini",
+      "commit_sha": "1100ff0",
+      "pr_number": 11,
+      "function": "lookup_table",
+      "verdict": "leak_detected",
+      "leak_channel": "cycles",
+      "leak_severity": "HIGH",
+      "leak_confidence": 0.81,
+      "n_traces": 2560,
+      "duration_s": 33.2,
+      "started_at": "2026-04-30T10:50:00Z",
+      "finished_at": "2026-04-30T10:50:33Z",
+      "quarantine_fired": true
+    },
+    {
+      "id": "run_2026_0095",
+      "repo": "acme/login-service",
+      "commit_sha": "ee887aa",
+      "pr_number": 146,
+      "function": "strcmp_naive",
+      "verdict": "leak_detected",
+      "leak_channel": "cycles",
+      "leak_severity": "CRITICAL",
+      "leak_confidence": 0.96,
+      "n_traces": 1280,
+      "duration_s": 18.0,
+      "started_at": "2026-04-30T08:30:00Z",
+      "finished_at": "2026-04-30T08:30:18Z",
+      "quarantine_fired": true
+    },
+    {
+      "id": "run_2026_0094",
+      "repo": "acme/login-service",
+      "commit_sha": "ee887aa",
+      "pr_number": 146,
+      "function": "strcmp_safe",
+      "verdict": "safe",
+      "leak_channel": null,
+      "leak_severity": null,
+      "leak_confidence": 0.01,
+      "n_traces": 1280,
+      "duration_s": 17.7,
+      "started_at": "2026-04-30T08:30:00Z",
+      "finished_at": "2026-04-30T08:30:17Z",
+      "quarantine_fired": false
+    },
+    {
+      "id": "run_2026_0102",
+      "repo": "acme/login-service",
+      "commit_sha": "ab12cd3",
+      "pr_number": 148,
+      "function": "parse_token",
+      "verdict": "memory_corruption_detected",
+      "leak_channel": null,
+      "leak_severity": null,
+      "leak_confidence": 0.0,
+      "n_traces": 800,
+      "duration_s": 9.4,
+      "started_at": "2026-05-01T10:12:00Z",
+      "finished_at": "2026-05-01T10:12:09Z",
+      "quarantine_fired": true,
+      "findings_summary": {
+        "total": 4,
+        "by_severity": {
+          "CRITICAL": 1, "HIGH": 1, "MEDIUM": 0, "LOW": 0, "INFO": 0, "pass": 2
+        },
+        "by_type": {
+          "tvla": 1, "crash": 1, "non_determinism": 0, "length_oracle": 1,
+          "memory_corruption": 1, "static": 0, "cpa_key_recovery": 0
+        },
+        "worst_severity": "CRITICAL"
+      }
+    },
+    {
+      "id": "run_2026_0103",
+      "repo": "kettle/aes-mini",
+      "commit_sha": "92aa400",
+      "pr_number": 13,
+      "function": "aes_encrypt_round",
+      "verdict": "key_recovered",
+      "leak_channel": "power",
+      "leak_severity": "CRITICAL",
+      "leak_confidence": 0.99,
+      "n_traces": 4096,
+      "duration_s": 62.5,
+      "started_at": "2026-05-01T11:08:00Z",
+      "finished_at": "2026-05-01T11:09:02Z",
+      "quarantine_fired": false,
+      "findings_summary": {
+        "total": 6,
+        "by_severity": {
+          "CRITICAL": 2, "HIGH": 1, "MEDIUM": 0, "LOW": 0, "INFO": 0, "pass": 3
+        },
+        "by_type": {
+          "tvla": 2, "crash": 1, "non_determinism": 1, "length_oracle": 1,
+          "memory_corruption": 0, "static": 0, "cpa_key_recovery": 1
+        },
+        "worst_severity": "CRITICAL"
+      }
+    },
+    {
+      "id": "run_2026_0104",
+      "repo": "vault/json-validator",
+      "commit_sha": "7b9c011",
+      "pr_number": 22,
+      "function": "validate_token",
+      "verdict": "non_determinism_detected",
+      "leak_channel": null,
+      "leak_severity": null,
+      "leak_confidence": 0.0,
+      "n_traces": 600,
+      "duration_s": 7.1,
+      "started_at": "2026-05-01T12:30:00Z",
+      "finished_at": "2026-05-01T12:30:07Z",
+      "quarantine_fired": false,
+      "findings_summary": {
+        "total": 4,
+        "by_severity": {
+          "CRITICAL": 0, "HIGH": 1, "MEDIUM": 0, "LOW": 0, "INFO": 0, "pass": 3
+        },
+        "by_type": {
+          "tvla": 1, "crash": 0, "non_determinism": 1, "length_oracle": 1,
+          "memory_corruption": 0, "static": 1, "cpa_key_recovery": 0
+        },
+        "worst_severity": "HIGH"
+      }
+    },
+    {
+      "id": "run_2026_0105",
+      "repo": "kettle/embed-utils",
+      "commit_sha": "44f0021",
+      "pr_number": 7,
+      "function": "modular_exp",
+      "verdict": "static_warning",
+      "leak_channel": null,
+      "leak_severity": null,
+      "leak_confidence": 0.0,
+      "n_traces": 0,
+      "duration_s": 0.4,
+      "started_at": "2026-05-01T13:01:00Z",
+      "finished_at": "2026-05-01T13:01:00Z",
+      "quarantine_fired": false,
+      "findings_summary": {
+        "total": 2,
+        "by_severity": {
+          "CRITICAL": 0, "HIGH": 1, "MEDIUM": 1, "LOW": 0, "INFO": 0, "pass": 0
+        },
+        "by_type": {
+          "tvla": 0, "crash": 0, "non_determinism": 0, "length_oracle": 0,
+          "memory_corruption": 0, "static": 2, "cpa_key_recovery": 0
+        },
+        "worst_severity": "HIGH"
+      }
+    }
+  ]
+}
