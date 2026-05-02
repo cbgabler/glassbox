@@ -6,7 +6,7 @@ export interface AuditResponse {
 export async function startAudit(pathOrUrl: string): Promise<AuditResponse> {
   return new Promise((resolve) => {
     setTimeout(() => {
-      resolve({ run_id: "mcp-run-" + Date.now() });
+      resolve({ run_id: "mcp-run-" + crypto.randomUUID() });
     }, 1500);
   });
 }

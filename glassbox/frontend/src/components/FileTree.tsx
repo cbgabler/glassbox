@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { fetchRepoStructure } from "@/lib/api"
 import { Loader2 } from "lucide-react"
+import { motion } from "framer-motion"
 
 export function FileTree() {
   const { runId } = useParams()
@@ -24,10 +25,15 @@ export function FileTree() {
   }
 
   return (
-    <div className="p-4 overflow-y-auto prose prose-invert prose-sm max-w-none prose-a:text-emerald-400 hover:prose-a:text-emerald-300">
+    <motion.div 
+      initial={{ opacity: 0, x: -10 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ duration: 0.4 }}
+      className="p-4 overflow-y-auto prose prose-invert prose-sm max-w-none prose-a:text-emerald-400 hover:prose-a:text-emerald-300"
+    >
       <ReactMarkdown remarkPlugins={[remarkGfm]}>
         {markdown}
       </ReactMarkdown>
-    </div>
+    </motion.div>
   )
 }
