@@ -44,48 +44,80 @@ static const uint8_t SECRET_LEN  = 8;
 
 // fn_id = 0: noop (calibration baseline)
 int fn_noop(const uint8_t* in, size_t n, uint8_t* out, size_t* out_n) {
-    (void)in; (void)n; (void)out;
-    *out_n = 0;
-    return 0;
-  }
+  (void)in; (void)n; (void)out;
+  *out_n = 0;
+  return 0;
+}
   
-  // fn_id = 1: naive strcmp -- early-return on first mismatched byte (TIMING LEAK).
-  int fn_strcmp_naive(const uint8_t* in, size_t n, uint8_t* out, size_t* out_n) {
-    *out_n = 1;
-    for (uint8_t i = 0; i < SECRET_LEN; i++) {
-      if (i >= n || in[i] != (uint8_t)SECRET[i]) {
-        out[0] = 0;
-        return 0;
-      }
+// fn_id = 1: naive strcmp -- early-return on first mismatched byte (TIMING LEAK).
+int fn_strcmp_naive(const uint8_t* in, size_t n, uint8_t* out, size_t* out_n) {
+  *out_n = 1;
+  for (uint8_t i = 0; i < SECRET_LEN; i++) {
+    if (i >= n || in[i] != (uint8_t)SECRET[i]) {
+      out[0] = 0;
+      return 0;
     }
-    out[0] = 1;
-    return 1;
   }
+  out[0] = 1;
+  return 1;
+}
   
-  // fn_id = 2: constant-time compare -- always touches every byte (SAFE).
-  int fn_strcmp_safe(const uint8_t* in, size_t n, uint8_t* out, size_t* out_n) {
-    uint8_t diff = 0;
-    for (uint8_t i = 0; i < SECRET_LEN; i++) {
-      uint8_t a = (i < n) ? in[i] : 0;
-      diff |= (a ^ (uint8_t)SECRET[i]);
-    }
-    out[0] = (diff == 0) ? 1 : 0;
-    *out_n = 1;
-    return out[0];
+// fn_id = 2: constant-time compare -- always touches every byte (SAFE).
+int fn_strcmp_safe(const uint8_t* in, size_t n, uint8_t* out, size_t* out_n) {
+  uint8_t diff = 0;
+  for (uint8_t i = 0; i < SECRET_LEN; i++) {
+    uint8_t a = (i < n) ? in[i] : 0;
+    diff |= (a ^ (uint8_t)SECRET[i]);
   }
+  out[0] = (diff == 0) ? 1 : 0;
+  *out_n = 1;
+  return out[0];
+}
   
-  // fn_id = 3: user-supplied target. Forwards to gb_target_call() defined in
-  // gb_target.cpp (which is just a sibling source file in this sketch folder).
-  // The default stub is a no-op so the firmware always builds; users replace
-  // gb_target.cpp with their own function-under-test before flashing.
-  int fn_user_target(const uint8_t* in, size_t n, uint8_t* out, size_t* out_n) {
-    return gb_target_call(in, n, out, out_n);
+// fn_id = 3: user-supplied target. Forwards to gb_target_call() defined in
+// gb_target.cpp (which is just a sibling source file in this sketch folder).
+// The default stub is a no-op so the firmware always builds; users replace
+// gb_target.cpp with their own function-under-test before flashing.
+int fn_user_target(const uint8_t* in, size_t n, uint8_t* out, size_t* out_n) {
+  return gb_target_call(in, n, out, out_n);
+}
+
+typedef int (*fn_t)(const uint8_t*, size_t, uint8_t*, size_t*);
+static fn_t       FUNCTIONS[]  = { fn_noop, fn_strcmp_naive, fn_strcmp_safe, fn_user_target };
+static const int  N_FUNCTIONS  = sizeof(FUNCTIONS) / sizeof(FUNCTIONS[0]);
+static const char* FN_NAMES[]  = { "noop", "strcmp_naive", "strcmp_safe", "user_target" };
+
+// =============================================================================
+// Hex helpers
+// =============================================================================
+
+static int hexval(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+static int hex_decode(const char* s, size_t s_len, uint8_t* out, size_t out_max) {
+  size_t n = s_len / 2;
+  if (n > out_max) n = out_max;
+  for (size_t i = 0; i < n; i++) {
+    int hi = hexval(s[2*i]);
+    int lo = hexval(s[2*i + 1]);
+    if (hi < 0 || lo < 0) return -1;
+    out[i] = (uint8_t)((hi << 4) | lo);
   }
-  
-  typedef int (*fn_t)(const uint8_t*, size_t, uint8_t*, size_t*);
-  static fn_t       FUNCTIONS[]  = { fn_noop, fn_strcmp_naive, fn_strcmp_safe, fn_user_target };
-  static const int  N_FUNCTIONS  = sizeof(FUNCTIONS) / sizeof(FUNCTIONS[0]);
-  static const char* FN_NAMES[]  = { "noop", "strcmp_naive", "strcmp_safe", "user_target" };
+  return (int)n;
+}
+
+static void hex_encode(const uint8_t* bytes, size_t n, char* out) {
+  static const char* kHexChars = "0123456789abcdef";
+  for (size_t i = 0; i < n; i++) {
+    out[2*i]     = kHexChars[bytes[i] >> 4];
+    out[2*i + 1] = kHexChars[bytes[i] & 0xf];
+  }
+  out[2*n] = '\0';
+}
 
 // =============================================================================
 // Cycle counter (Xtensa CCOUNT register) + Hardware Performance Counters (PMU)
