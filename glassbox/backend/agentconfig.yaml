@@ -1,0 +1,13 @@
+agents:
+  - agent_id: "Anthonys personal helper"
+    description: "An assistant to help me with various tasks, including coding, research, and general problem-solving."
+    llm:
+      model: claude-opus-4-5-20251101 
+      temperature: 0.7
+      max_tokens: 3000
+    servers:
+    server_generation: false
+    infra_generation: false
+    
+
+
