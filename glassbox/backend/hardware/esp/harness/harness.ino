@@ -3,6 +3,9 @@
 // Protocol over UART2 (Pico <-> ESP32):
 //   Pico  -> ESP32:  "RUN <fn_id> <hex_input>\n"
 //   ESP32 -> Pico:   "RES2 <cycles> <micros> <insns> <branches> <hex_output>\n"
+//                    "ERR  <reason>\n"                    (bad command / hex)
+//                    "MEMVIOL <kind> overrun=<n>\n"        (v2 memory-safety guard tripped)
+//                    "PANIC <pc> <reason>\n"               (v2 shutdown handler best-effort)
 //
 // The RES2 protocol replaces the older RES line and ships four timing/HPC
 // channels per call instead of one:
@@ -26,17 +29,67 @@
 
 #include <Arduino.h>
 #include <Preferences.h>
+#include <esp_debug_helpers.h>
+#include "gb_target.h"
 
 static const int PIN_TRIGGER_OUT=5;
 
-// State preserve in NVS (flash-backed key/val) under"gb"
-static Preferences nvs;
-static bool g_quarantined = false;
+// =============================================================================
+// v2 memory-safety guards
+// =============================================================================
+//
+// We can't easily turn on AddressSanitizer on this Xtensa target (no
+// gcc-asan in the stock Arduino-ESP32 toolchain). Instead we install three
+// _source-level_ guards that catch the most common memory-safety failures
+// in user-supplied gb_target_call() implementations:
+//
+//   1. Shadow sentinel regions immediately before AND after the input and
+//      output buffers. We fill them with a known pattern, run the user
+//      function, then check the pattern is intact. Any byte that changed
+//      means the function wrote past a buffer end.
+//
+//   2. Stack canary: a sentinel uint32_t on the stack, captured BEFORE the
+//      call and rechecked AFTER. The compiler's own -fstack-protector-strong
+//      is the right tool for this if you're using PlatformIO -- add it to
+//      build_flags in platformio.ini. The source-level canary below catches
+//      a subset (overflows that hit the local frame) without any flags.
+//
+//   3. Panic handler: when ANY of the guards trip, we emit "MEMVIOL ..."
+//      over Serial2 instead of the usual RES2 line. The Pico's runner
+//      classifies that as a memory_corruption finding.
+//
+// To also enable ESP-IDF heap poisoning + stack canaries (recommended for
+// PlatformIO users), add the following to platformio.ini:
+//
+//     build_flags =
+//       -fstack-protector-strong
+//       -DCONFIG_HEAP_POISONING_COMPREHENSIVE=1
+//       -DCONFIG_HEAP_USE_HOOKS=1
+//
+// On the stock Arduino IDE these are off by default and there's no clean
+// project-local override. The source-level guards below work regardless.
 
-// 8-byte secret used by the strcmp primitives.
-static const char    SECRET[]    = "hunter2!";
-static const uint8_t SECRET_LEN  = 8;
+// 32-byte sentinel pattern. Pick something distinctive so a partial memcpy
+// of the input doesn't accidentally regenerate it.
+static const uint8_t MEMGUARD_PATTERN[32] = {
+  0xDE, 0xAD, 0xC0, 0xDE, 0xCA, 0xFE, 0xBA, 0xBE,
+  0xFE, 0xED, 0xFA, 0xCE, 0xB1, 0x6B, 0x00, 0xB5,
+  0x8B, 0xAD, 0xF0, 0x0D, 0x0D, 0xEF, 0xAC, 0xED,
+  0xFA, 0xCE, 0xC0, 0x1A, 0xCA, 0xFE, 0xD0, 0x0D,
+};
 
+static inline void memguard_fill(uint8_t* dst) {
+  memcpy(dst, MEMGUARD_PATTERN, sizeof(MEMGUARD_PATTERN));
+}
+
+// Returns the number of bytes that differ from the pattern. 0 = clean.
+static inline size_t memguard_check(const uint8_t* p) {
+  size_t bad = 0;
+  for (size_t i = 0; i < sizeof(MEMGUARD_PATTERN); i++) {
+    if (p[i] != MEMGUARD_PATTERN[i]) bad++;
+  }
+  return bad;
+}
 
 // =============================================================================
 // default functions
@@ -157,6 +210,23 @@ static void hpc_selftest() {
 
 static uint32_t last_heartbeat_ms = 0;
 static uint32_t pings_seen = 0;
+
+// =============================================================================
+// Panic handler: emit a PANIC line over UART2 if the user's function under
+// test crashes. esp_register_shutdown_handler() runs late enough that
+// Serial2 is still alive but early enough to fire before the chip resets.
+// We only have a coarse "the chip is going down" signal -- not the actual
+// PC + reason -- but the runner classifies any PANIC line as a crash
+// finding, so the operator at least sees that this run died.
+// =============================================================================
+static void gb_panic_emit() {
+  // Best-effort: print to BOTH Serial and Serial2 so whichever side is
+  // listening sees the notification.
+  Serial.println("[esp32] !!! shutdown handler fired -- last RUN likely crashed !!!");
+  Serial2.println("PANIC 0x0 shutdown_handler_fired");
+  Serial2.flush();
+  Serial.flush();
+}
 
 void setup() {
   Serial.begin(115200);                             // USB debug 
@@ -282,14 +352,44 @@ void loop() {
   int64_t  us1 = esp_timer_get_time();
   while ((micros() - trig_t0) < MIN_TRIGGER_US) { /* hold HIGH */ }
   digitalWrite(PIN_TRIGGER_OUT, LOW);
+
   // ===========================================================================
+  // Memory-safety guards: check each shadow sentinel and the stack canary.
+  // If any tripped, emit MEMVIOL instead of RES2 -- the Pico runner will
+  // classify this as a memory_corruption finding (not just "the run failed").
+  size_t bad_pre_in   = memguard_check(gb.pre_in);
+  size_t bad_post_in  = memguard_check(gb.post_in);
+  size_t bad_pre_out  = memguard_check(gb.pre_out);
+  size_t bad_post_out = memguard_check(gb.post_out);
+  bool   canary_ok    = (stack_canary_before == STACK_CANARY);
+  if (bad_pre_in || bad_post_in || bad_pre_out || bad_post_out || !canary_ok) {
+    const char* kind = "stack_canary";
+    size_t overrun = 0;
+    if (bad_post_in) {
+      kind = "input_shadow_overflow";    overrun = bad_post_in;
+    } else if (bad_pre_in) {
+      kind = "input_shadow_overflow";    overrun = bad_pre_in;
+    } else if (bad_post_out) {
+      kind = "output_shadow_overflow";   overrun = bad_post_out;
+    } else if (bad_pre_out) {
+      kind = "output_shadow_overflow";   overrun = bad_pre_out;
+    }
+    Serial2.printf("MEMVIOL %s overrun=%u\n", kind, (unsigned)overrun);
+    Serial.printf("[esp32] !!! MEMVIOL %s overrun=%u !!! "
+                  "(canary=%s, pre_in=%u, post_in=%u, pre_out=%u, post_out=%u)\n",
+                  kind, (unsigned)overrun, canary_ok ? "ok" : "BROKEN",
+                  (unsigned)bad_pre_in, (unsigned)bad_post_in,
+                  (unsigned)bad_pre_out, (unsigned)bad_post_out);
+    pings_seen++;
+    return;
+  }
 
   uint32_t cycles   = t1 - t0;
   uint32_t insns    = i1 - i0;
   uint32_t branches = b1 - b0;
   uint32_t micros_  = (uint32_t)(us1 - us0);
 
-  char hex_output[2 * sizeof(output) + 1];
+  char hex_output[2 * sizeof(gb.output) + 1];
   hex_encode(output, out_len, hex_output);
 
   Serial2.printf("RES2 %u %u %u %u %s\n",
