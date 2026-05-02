@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 
+	"glassbox/backend/cleanup"
+
 	agent "github.com/AnthonyL103/GOMCP/Agent"
 	"github.com/AnthonyL103/GOMCP/chat"
 	"github.com/AnthonyL103/GOMCP/protocol/parseagentprotocol"
@@ -83,6 +85,15 @@ func runagent() {
 	if err != nil {
 		log.Fatal("Failed to start servers:", err)
 	}
+
+	// Ensure runs are removed on normal exit as well as on signals
+	defer func() {
+		if err := cleanup.RemoveAllRuns(); err != nil {
+			log.Printf("cleanup: failed to remove runs: %v", err)
+		} else {
+			log.Println("cleanup: removed run workspaces")
+		}
+	}()
 
 	// Setup graceful shutdown
 	setupGracefulShutdown(processes)
@@ -180,6 +191,13 @@ func setupGracefulShutdown(processes []*os.Process) {
 				log.Printf("Killing process PID: %d", proc.Pid)
 				proc.Kill()
 			}
+		}
+
+		// Remove run workspaces
+		if err := cleanup.RemoveAllRuns(); err != nil {
+			log.Printf("cleanup: failed to remove runs: %v", err)
+		} else {
+			log.Println("cleanup: removed run workspaces")
 		}
 
 		log.Println("Cleanup complete. Exiting.")
