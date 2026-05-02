@@ -1,0 +1,166 @@
+{
+  "schema": "glassbox.runs_index.v1",
+  "fleet": {
+    "n_pods": 1,
+    "pod_ids": [
+      "pod-osu-001"
+    ]
+  },
+  "leaderboard": [
+    {
+      "library": "libsodium sodium_memcmp",
+      "verdict": "safe",
+      "score": 100
+    },
+    {
+      "library": "OpenSSL CRYPTO_memcmp",
+      "verdict": "safe",
+      "score": 100
+    },
+    {
+      "library": "POSIX memcmp",
+      "verdict": "leak_detected",
+      "score": 12
+    },
+    {
+      "library": "naive strcmp",
+      "verdict": "leak_detected",
+      "score": 0
+    },
+    {
+      "library": "AES SubBytes (table lookup)",
+      "verdict": "leak_detected",
+      "score": 35
+    }
+  ],
+  "runs": [
+    {
+      "id": "run_2026_0101",
+      "repo": "acme/login-service",
+      "commit_sha": "3f9a1c2",
+      "pr_number": 147,
+      "function": "password_check",
+      "verdict": "leak_detected",
+      "leak_channel": "cycles",
+      "leak_severity": "CRITICAL",
+      "leak_confidence": 0.94,
+      "n_traces": 1280,
+      "duration_s": 18.3,
+      "started_at": "2026-04-30T14:30:00Z",
+      "finished_at": "2026-04-30T14:30:18Z",
+      "quarantine_fired": true
+    },
+    {
+      "id": "run_2026_0100",
+      "repo": "acme/login-service",
+      "commit_sha": "2a1b8e7",
+      "pr_number": 147,
+      "function": "password_check",
+      "verdict": "safe",
+      "leak_channel": null,
+      "leak_severity": null,
+      "leak_confidence": 0.02,
+      "n_traces": 1280,
+      "duration_s": 17.9,
+      "started_at": "2026-04-30T14:25:00Z",
+      "finished_at": "2026-04-30T14:25:17Z",
+      "quarantine_fired": false
+    },
+    {
+      "id": "run_2026_0099",
+      "repo": "vault/crypto-utils",
+      "commit_sha": "d44eaf0",
+      "pr_number": 82,
+      "function": "hmac_compare",
+      "verdict": "leak_detected",
+      "leak_channel": "power",
+      "leak_severity": "HIGH",
+      "leak_confidence": 0.87,
+      "n_traces": 1024,
+      "duration_s": 14.6,
+      "started_at": "2026-04-30T13:58:00Z",
+      "finished_at": "2026-04-30T13:58:14Z",
+      "quarantine_fired": true
+    },
+    {
+      "id": "run_2026_0098",
+      "repo": "kettle/aes-mini",
+      "commit_sha": "bbb2104",
+      "pr_number": 12,
+      "function": "aes_sbox",
+      "verdict": "leak_detected",
+      "leak_channel": "power",
+      "leak_severity": "MEDIUM",
+      "leak_confidence": 0.71,
+      "n_traces": 4096,
+      "duration_s": 58.1,
+      "started_at": "2026-04-30T13:03:00Z",
+      "finished_at": "2026-04-30T13:03:58Z",
+      "quarantine_fired": false
+    },
+    {
+      "id": "run_2026_0097",
+      "repo": "vault/crypto-utils",
+      "commit_sha": "9e0aa11",
+      "pr_number": 81,
+      "function": "hmac_compare",
+      "verdict": "safe",
+      "leak_channel": null,
+      "leak_severity": null,
+      "leak_confidence": 0.04,
+      "n_traces": 1024,
+      "duration_s": 14.4,
+      "started_at": "2026-04-30T12:10:00Z",
+      "finished_at": "2026-04-30T12:10:14Z",
+      "quarantine_fired": false
+    },
+    {
+      "id": "run_2026_0096",
+      "repo": "kettle/aes-mini",
+      "commit_sha": "1100ff0",
+      "pr_number": 11,
+      "function": "lookup_table",
+      "verdict": "leak_detected",
+      "leak_channel": "cycles",
+      "leak_severity": "HIGH",
+      "leak_confidence": 0.81,
+      "n_traces": 2560,
+      "duration_s": 33.2,
+      "started_at": "2026-04-30T10:50:00Z",
+      "finished_at": "2026-04-30T10:50:33Z",
+      "quarantine_fired": true
+    },
+    {
+      "id": "run_2026_0095",
+      "repo": "acme/login-service",
+      "commit_sha": "ee887aa",
+      "pr_number": 146,
+      "function": "strcmp_naive",
+      "verdict": "leak_detected",
+      "leak_channel": "cycles",
+      "leak_severity": "CRITICAL",
+      "leak_confidence": 0.96,
+      "n_traces": 1280,
+      "duration_s": 18.0,
+      "started_at": "2026-04-30T08:30:00Z",
+      "finished_at": "2026-04-30T08:30:18Z",
+      "quarantine_fired": true
+    },
+    {
+      "id": "run_2026_0094",
+      "repo": "acme/login-service",
+      "commit_sha": "ee887aa",
+      "pr_number": 146,
+      "function": "strcmp_safe",
+      "verdict": "safe",
+      "leak_channel": null,
+      "leak_severity": null,
+      "leak_confidence": 0.01,
+      "n_traces": 1280,
+      "duration_s": 17.7,
+      "started_at": "2026-04-30T08:30:00Z",
+      "finished_at": "2026-04-30T08:30:17Z",
+      "quarantine_fired": false
+    }
+  ]
+}
