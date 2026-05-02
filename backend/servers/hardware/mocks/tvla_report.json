@@ -1,0 +1,116 @@
+{
+  "schema": "glassbox.tvla.v1",
+  "tvla_threshold": 4.5,
+  "n_traces_total": 2760,
+  "per_function": {
+    "strcmp_naive": {
+      "n_group_a": 5,
+      "n_group_b": 1275,
+      "channels": {
+        "cycles": {
+          "verdict": "CRITICAL",
+          "t_abs": null,
+          "t_abs_infinite": true,
+          "mean_a": 113.0,
+          "mean_b": 56.0,
+          "note": "perfect determinism"
+        },
+        "micros": {
+          "verdict": "BELOW_QUANTUM",
+          "t_abs": 20.4,
+          "mean_a": 1.0,
+          "mean_b": 0.75
+        },
+        "insns": {
+          "verdict": "flat",
+          "mean_a": 0.0,
+          "mean_b": 0.0
+        },
+        "branches": {
+          "verdict": "flat",
+          "mean_a": 0.0,
+          "mean_b": 0.0
+        }
+      },
+      "leak_detected": true,
+      "strongest_channel": "cycles",
+      "strongest_severity": "CRITICAL",
+      "strongest_t_abs": null
+    },
+    "strcmp_safe": {
+      "n_group_a": 5,
+      "n_group_b": 1275,
+      "channels": {
+        "cycles": {
+          "verdict": "pass",
+          "t_abs": 1.0,
+          "mean_a": 143.0,
+          "mean_b": 143.44
+        },
+        "micros": {
+          "verdict": "BELOW_QUANTUM",
+          "t_abs": 11.13,
+          "mean_a": 1.0,
+          "mean_b": 1.09
+        },
+        "insns": {
+          "verdict": "flat",
+          "mean_a": 0.0,
+          "mean_b": 0.0
+        },
+        "branches": {
+          "verdict": "flat",
+          "mean_a": 0.0,
+          "mean_b": 0.0
+        }
+      },
+      "leak_detected": false,
+      "strongest_channel": null,
+      "strongest_severity": null,
+      "strongest_t_abs": null
+    }
+  },
+  "n_leak": 1,
+  "n_pass": 1,
+  "leaky_functions": [
+    "strcmp_naive"
+  ],
+  "expectations_match": true,
+  "severity_ladder": [
+    {
+      "name": "CRITICAL",
+      "rule": ">=10% relative diff or perfect determinism",
+      "color": "#dc2626"
+    },
+    {
+      "name": "HIGH",
+      "rule": ">=1% relative diff",
+      "color": "#ea580c"
+    },
+    {
+      "name": "MEDIUM",
+      "rule": ">=0.1% relative diff",
+      "color": "#d97706"
+    },
+    {
+      "name": "LOW",
+      "rule": "<0.1% but |t|>4.5",
+      "color": "#ca8a04"
+    },
+    {
+      "name": "BELOW_QUANTUM",
+      "rule": "delta < channel measurement floor",
+      "color": "#6b7280"
+    },
+    {
+      "name": "pass",
+      "rule": "|t| <= 4.5",
+      "color": "#16a34a"
+    },
+    {
+      "name": "flat",
+      "rule": "channel has no signal at all",
+      "color": "#9ca3af"
+    }
+  ]
+}

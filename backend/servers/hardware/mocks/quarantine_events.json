@@ -1,0 +1,76 @@
+{
+  "schema": "glassbox.quarantine_events.v1",
+  "victim": {
+    "chip": "ESP32-WROOM-32",
+    "freq_mhz": 240
+  },
+  "monitor": {
+    "chip": "RP2040",
+    "kill_lines": [
+      "GP3->EN",
+      "GP4->GPIO0"
+    ]
+  },
+  "events": [
+    {
+      "t": "2026-04-30T15:00:00Z",
+      "from": "boot",
+      "to": "running",
+      "reason": "harness_v2_started",
+      "by": "esp32"
+    },
+    {
+      "t": "2026-04-30T15:00:02Z",
+      "from": "running",
+      "to": "running",
+      "reason": "smoke_test_pass",
+      "by": "runner"
+    },
+    {
+      "t": "2026-04-30T15:00:18Z",
+      "from": "running",
+      "to": "quarantined",
+      "reason": "classifier_fired",
+      "by": "pico_monitor",
+      "detail": {
+        "fn": "strcmp_naive",
+        "channel": "cycles",
+        "leak_confidence": 0.94,
+        "streak_at_fire": 3,
+        "calls_before_fire": 13,
+        "method": "kill_lines+nvs"
+      }
+    },
+    {
+      "t": "2026-04-30T15:00:18Z",
+      "from": "quarantined",
+      "to": "rom_bootloader",
+      "reason": "kill_line_strike",
+      "by": "pico_monitor",
+      "detail": {
+        "hold_ms": 20,
+        "lines": [
+          "KILL_BOOT",
+          "KILL_EN"
+        ]
+      }
+    },
+    {
+      "t": "2026-04-30T15:00:22Z",
+      "from": "rom_bootloader",
+      "to": "rom_bootloader",
+      "reason": "operator_inspect",
+      "by": "operator"
+    },
+    {
+      "t": "2026-04-30T15:00:45Z",
+      "from": "rom_bootloader",
+      "to": "running",
+      "reason": "operator_unquarantine",
+      "by": "operator",
+      "detail": {
+        "command": "python quarantine.py --port /dev/cu.usbmodem1101 release"
+      }
+    }
+  ]
+}
