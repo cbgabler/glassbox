@@ -13,19 +13,30 @@ export async function startAudit(pathOrUrl: string): Promise<AuditResponse> {
 
 // MCP Mock Endpoints returning Markdown
 
-export async function fetchRepoStructure(runId: string): Promise<string> {
+export interface FileNode {
+  name: string;
+  type: "file" | "folder";
+  children?: FileNode[];
+  status?: "normal" | "vulnerable" | "warning";
+  vulnDescription?: string;
+}
+
+export async function fetchRepoStructure(runId: string): Promise<FileNode[]> {
   return new Promise((resolve) => {
     setTimeout(() => {
-      resolve(`
-### Repository Structure
-
-- 📁 **src**
-  - 📄 \`main.py\`
-  - 📄 \`auth.py\` 🔴 *(Critical: Timing Leak)*
-  - 📄 \`utils.py\`
-- 📄 \`package.json\` 🟠 *(High: Vulnerable Dependency)*
-- 📄 \`.env\` 🟠 *(High: Plaintext Secret)*
-      `.trim());
+      resolve([
+        {
+          name: "src",
+          type: "folder",
+          children: [
+            { name: "main.py", type: "file", status: "normal" },
+            { name: "auth.py", type: "file", status: "vulnerable", vulnDescription: "Critical: Timing Leak" },
+            { name: "utils.py", type: "file", status: "normal" },
+          ]
+        },
+        { name: "package.json", type: "file", status: "warning", vulnDescription: "High: Vulnerable Dependency" },
+        { name: ".env", type: "file", status: "warning", vulnDescription: "High: Plaintext Secret" }
+      ]);
     }, 1000);
   });
 }

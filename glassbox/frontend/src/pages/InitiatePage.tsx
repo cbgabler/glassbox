@@ -1,7 +1,8 @@
 import { useState } from "react"
 import { useNavigate, Link } from "react-router-dom"
 import { startAudit } from "@/lib/api"
-import { Shield, Loader2, ArrowRight, ArrowLeft } from "lucide-react"
+import { Shield, Loader2, ArrowRight, ArrowLeft, Target, Database } from "lucide-react"
+import { motion } from "framer-motion"
 
 export function InitiatePage() {
   const [repoUrl, setRepoUrl] = useState("")
@@ -34,31 +35,39 @@ export function InitiatePage() {
   }
 
   return (
-    <div className="min-h-screen w-full bg-background flex items-center justify-center p-4 relative overflow-hidden">
+    <div className="min-h-screen w-full bg-background flex items-center justify-center p-4 relative overflow-hidden bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]">
       {/* Background decoration */}
       <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[800px] h-[800px] bg-emerald-500/5 rounded-full blur-[150px] pointer-events-none" />
       
-      <Link to="/" className="absolute top-8 left-8 flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors font-medium">
+      <Link to="/" className="absolute top-8 left-8 flex items-center gap-2 text-muted-foreground hover:text-emerald-400 transition-colors font-medium z-10">
         <ArrowLeft className="w-4 h-4" />
         Back to Home
       </Link>
 
-      <div className="w-full max-w-md bg-card/40 backdrop-blur-2xl border border-white/5 rounded-2xl shadow-2xl p-8 relative animate-in fade-in zoom-in duration-500 ring-1 ring-white/5">
-        <div className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-emerald-500/20 to-transparent" />
+      <motion.div 
+        initial={{ opacity: 0, scale: 0.95, y: 20 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        transition={{ duration: 0.5, ease: "easeOut" }}
+        className="w-full max-w-md bg-[#0a0a0a]/80 backdrop-blur-2xl border border-white/10 rounded-2xl shadow-[0_0_80px_rgba(16,185,129,0.1)] p-8 relative ring-1 ring-white/5 z-10"
+      >
+        <div className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-emerald-500/40 to-transparent" />
         
-        <div className="flex items-center justify-center w-12 h-12 bg-emerald-500/10 text-emerald-400 rounded-full mb-6 mx-auto ring-1 ring-emerald-500/20 shadow-[0_0_15px_rgba(16,185,129,0.2)]">
-          <Shield className="w-6 h-6" />
+        <div className="flex items-center justify-center w-14 h-14 bg-emerald-500/10 text-emerald-400 rounded-full mb-6 mx-auto ring-1 ring-emerald-500/20 shadow-[0_0_20px_rgba(16,185,129,0.2)]">
+          <Target className="w-7 h-7" />
         </div>
         
         <div className="text-center mb-8">
-          <h2 className="text-2xl font-bold text-foreground tracking-tight mb-2">Initiate Audit</h2>
+          <h2 className="text-2xl font-bold text-foreground tracking-tight mb-2">Configure Target</h2>
           <p className="text-sm text-muted-foreground">
-            Enter a GitHub repository URL or absolute local path to begin scanning for side-channels and secrets.
+            Enter a GitHub URL or local path to attach the MCP auditor and extract vulnerabilities.
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          <div className="flex flex-col gap-2">
+        <form onSubmit={handleSubmit} className="flex flex-col gap-5">
+          <div className="flex flex-col gap-2 relative">
+            <div className="absolute left-4 top-3.5 text-muted-foreground">
+              <Database className="w-5 h-5" />
+            </div>
             <input
               type="text"
               value={repoUrl}
@@ -67,36 +76,36 @@ export function InitiatePage() {
                 if (error) setError(null)
               }}
               disabled={isSubmitting}
-              placeholder="e.g., https://github.com/org/repo"
-              className={`w-full bg-background/50 border rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 transition-all text-foreground placeholder:text-muted-foreground disabled:opacity-50 ${
-                error ? "border-red-500/50 focus:ring-red-500/50 focus:border-red-500/50" : "border-border focus:ring-indigo-500/50 focus:border-indigo-500/50"
+              placeholder="https://github.com/org/repo"
+              className={`w-full bg-[#050505] border rounded-xl pl-12 pr-4 py-3.5 text-sm focus:outline-none focus:ring-1 transition-all text-foreground placeholder:text-muted-foreground/50 disabled:opacity-50 shadow-inner ${
+                error ? "border-red-500/50 focus:ring-red-500 focus:border-red-500" : "border-white/10 focus:ring-emerald-500/50 focus:border-emerald-500/50 hover:border-white/20"
               }`}
               required
             />
             {error && (
-              <p className="text-sm text-red-400 font-medium animate-in fade-in slide-in-from-top-1">{error}</p>
+              <motion.p initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} className="text-xs text-red-400 font-medium px-1">{error}</motion.p>
             )}
           </div>
 
           <button
             type="submit"
             disabled={isSubmitting || !repoUrl}
-            className="w-full flex items-center justify-center gap-2 bg-foreground text-background hover:bg-foreground/90 disabled:bg-muted disabled:text-muted-foreground px-4 py-3 rounded-lg font-medium transition-all shadow-lg active:scale-95 group"
+            className="w-full flex items-center justify-center gap-2 bg-emerald-500 text-black hover:bg-emerald-400 disabled:bg-white/5 disabled:text-muted-foreground px-4 py-3.5 rounded-xl font-bold transition-all shadow-[0_0_20px_rgba(16,185,129,0.2)] hover:shadow-[0_0_30px_rgba(16,185,129,0.4)] disabled:shadow-none active:scale-95 group mt-2"
           >
             {isSubmitting ? (
               <>
-                <Loader2 className="w-4 h-4 animate-spin" />
+                <Loader2 className="w-5 h-5 animate-spin" />
                 Initializing Pod...
               </>
             ) : (
               <>
-                Start Audit
-                <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                Attach Auditor
+                <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
               </>
             )}
           </button>
         </form>
-      </div>
+      </motion.div>
     </div>
   )
 }

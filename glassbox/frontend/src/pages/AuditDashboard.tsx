@@ -32,7 +32,7 @@ export function AuditDashboard() {
   }
 
   return (
-    <div className="h-screen w-full bg-background text-foreground overflow-hidden font-sans">
+    <div className="h-screen w-full bg-background text-foreground overflow-hidden font-sans bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]">
       <PanelGroup orientation="horizontal">
         {/* Column 1: Repository Structure */}
         <Panel 
@@ -67,19 +67,25 @@ export function AuditDashboard() {
           </div>
         </Panel>
 
-        <PanelResizeHandle className="w-1 bg-border/50 hover:bg-emerald-500/50 transition-colors cursor-col-resize flex flex-col justify-center items-center group relative">
-          <div className="absolute inset-y-0 -left-1 -right-1 z-10" />
+        <PanelResizeHandle className="w-1.5 bg-white/5 backdrop-blur-sm border-x border-white/5 hover:bg-emerald-500/20 hover:border-emerald-500/30 transition-all cursor-col-resize flex flex-col justify-center items-center group relative z-50 shadow-[0_0_10px_rgba(0,0,0,0.5)]">
+          <div className="absolute inset-y-0 -left-2 -right-2 z-10" />
           <GripVertical className="w-3 h-6 text-muted-foreground group-hover:text-emerald-400 opacity-0 group-hover:opacity-100 transition-opacity" />
         </PanelResizeHandle>
 
         {/* Column 2: Triage & Snippets */}
-        <Panel defaultSize={55} minSize={30} className="flex flex-col min-w-0 bg-background relative shadow-inner">
-          <div className="flex items-center justify-between p-2 border-b border-border bg-card/30 shrink-0">
-            <button onClick={toggleLeft} className="p-1.5 hover:bg-muted rounded-md text-muted-foreground hover:text-foreground transition-colors" title="Toggle File Tree">
+        <Panel defaultSize={55} minSize={30} className="flex flex-col min-w-0 bg-[#050505]/80 backdrop-blur-md relative shadow-inner border-x border-white/5">
+          <div className="flex items-center justify-between p-2 border-b border-white/5 bg-background/50 backdrop-blur-md shrink-0 relative z-20">
+            <button onClick={toggleLeft} className="p-1.5 hover:bg-white/10 rounded-md text-muted-foreground hover:text-foreground transition-colors" title="Toggle File Tree">
               {isLeftCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
             </button>
-            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-widest">Triage Workspace</span>
-            <button onClick={toggleRight} className="p-1.5 hover:bg-muted rounded-md text-muted-foreground hover:text-foreground transition-colors" title="Toggle Chat">
+            <div className="flex items-center gap-4">
+              <span className="text-xs font-semibold text-foreground uppercase tracking-widest">Triage Workspace</span>
+              <div className="hidden sm:flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[10px] font-medium text-emerald-400 uppercase tracking-wider">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                HW Connected
+              </div>
+            </div>
+            <button onClick={toggleRight} className="p-1.5 hover:bg-white/10 rounded-md text-muted-foreground hover:text-foreground transition-colors" title="Toggle Chat">
               {isRightCollapsed ? <PanelRightOpen className="w-4 h-4" /> : <PanelRightClose className="w-4 h-4" />}
             </button>
           </div>
@@ -88,8 +94,8 @@ export function AuditDashboard() {
           </div>
         </Panel>
 
-        <PanelResizeHandle className="w-1 bg-border/50 hover:bg-emerald-500/50 transition-colors cursor-col-resize flex flex-col justify-center items-center group relative">
-          <div className="absolute inset-y-0 -left-1 -right-1 z-10" />
+        <PanelResizeHandle className="w-1.5 bg-white/5 backdrop-blur-sm border-x border-white/5 hover:bg-emerald-500/20 hover:border-emerald-500/30 transition-all cursor-col-resize flex flex-col justify-center items-center group relative z-50 shadow-[0_0_10px_rgba(0,0,0,0.5)]">
+          <div className="absolute inset-y-0 -left-2 -right-2 z-10" />
           <GripVertical className="w-3 h-6 text-muted-foreground group-hover:text-emerald-400 opacity-0 group-hover:opacity-100 transition-opacity" />
         </PanelResizeHandle>
 
