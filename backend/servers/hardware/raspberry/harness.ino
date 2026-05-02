@@ -23,3 +23,5 @@
 //   ESP32 GPIO17 (TX2) -> Pico GP1 (RX)
 //   ESP32 GPIO5        -> Pico GP2  (trigger OUTPUT, ESP32 drives)
 //   ESP32 GND          <-> Pico GND
+
+
