@@ -39,7 +39,7 @@ static const uint8_t SECRET_LEN  = 8;
 
 
 // =============================================================================
-default functions
+// default functions
 // =============================================================================
 
 // fn_id = 0: noop (calibration baseline)
@@ -99,3 +99,57 @@ int fn_noop(const uint8_t* in, size_t n, uint8_t* out, size_t* out_n) {
 //   bits [3:1]  : interrupt-level mask (0x7 = count at all levels)
 //   bits [7:4]  : kernel/user mask (0x3 = count in both modes)
 //   bits [23:16]: event select (TRACELEVEL)
+
+static inline uint32_t get_ccount() {
+  uint32_t cc;
+  asm volatile("rsr.ccount %0" : "=r"(cc));
+  return cc;
+}
+
+static inline uint32_t read_pm0() { return 0; }   // insns retired
+static inline uint32_t read_pm1() { return 0; }   // branches taken
+
+static inline void setup_hpc() {
+  // No-op on LX6. Function exists so the call site doesn't need an #ifdef
+  // and so an S3 port only needs to swap these three functions.
+}
+
+static void hpc_selftest() {
+  Serial.println("[esp32] hpc selftest  insns=0  branches=0  "
+                 "(LX6 has no PMU -- 3 channels live: cycles, micros, power)");
+}
+
+// =============================================================================
+// Setup + main loop
+// =============================================================================
+
+static uint32_t last_heartbeat_ms = 0;
+static uint32_t pings_seen = 0;
+
+void setup() {
+  Serial.begin(115200);                             // USB debug 
+  Serial2.begin(115200, SERIAL_8N1, 16, 17);        // baud, cfg, rx, tx
+
+  pinMode(PIN_TRIGGER_OUT, OUTPUT);
+  digitalWrite(PIN_TRIGGER_OUT, LOW);
+
+  setup_hpc();
+
+  // restore state from nvs + quarantine
+  nvs.begin("gb", false);
+  g_quarantined = nvs.getBool("quarantine", false);
+
+  delay(200);
+  Serial.println();
+  Serial.println("[esp32] harness ready (3 channels live: cycles+micros on ESP32, power on Pico)");
+  Serial.print  ("[esp32] functions: ");
+  for (int i = 0; i < N_FUNCTIONS; i++) {
+    Serial.printf("%d=%s%s", i, FN_NAMES[i], (i == N_FUNCTIONS - 1) ? "\n" : ", ");
+  }
+  Serial.printf("[esp32] user_target name: %s\n", gb_target_name());
+  if (g_quarantined) {
+    Serial.println("[esp32] !!! BOOTED IN QUARANTINE !!!  RUN commands will be refused.");
+    Serial.println("[esp32] send 'UNQUARANTINE' over UART2 to clear the flag.");
+  }
+  hpc_selftest();
+}
