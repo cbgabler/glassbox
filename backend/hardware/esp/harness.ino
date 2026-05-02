@@ -153,3 +153,116 @@ void setup() {
   }
   hpc_selftest();
 }
+
+void loop() {
+  uint32_t now = millis();
+  if (now - last_heartbeat_ms >= 5000) {
+    last_heartbeat_ms = now;
+    Serial.printf("[esp32] alive  ms=%lu  runs_seen=%lu\n",
+                  (unsigned long)now, (unsigned long)pings_seen);
+  }
+
+  if (!Serial2.available()) return;
+
+  String line = Serial2.readStringUntil('\n');
+  line.trim();
+  if (line.length() == 0) return;
+
+  // ---- Control plane ----------------------------------------------------
+  if (line == "STATUS") {
+    Serial2.printf("STATUS %s\n", g_quarantined ? "quarantined" : "running");
+    return;
+  }
+  if (line == "QUARANTINE") {
+    g_quarantined = true;
+    nvs.putBool("quarantine", true);
+    Serial2.println("ACK quarantined");
+    Serial.println("[esp32] !!! QUARANTINED via UART -- refusing further RUN commands !!!");
+    return;
+  }
+  if (line == "UNQUARANTINE") {
+    g_quarantined = false;
+    nvs.putBool("quarantine", false);
+    Serial2.println("ACK unquarantined");
+    Serial.println("[esp32] quarantine flag cleared; resuming normal operation");
+    return;
+  }
+  // ---- End control plane ------------------------------------------------
+
+  if (!line.startsWith("RUN ")) {
+    Serial2.printf("ERR bad command: %s\n", line.c_str());
+    return;
+  }
+
+  // Software-enforced quarantine check: refuse to dispatch any user code
+  // while the lockout is active. The hardware kill lines (driven by the
+  // Pico) provide the "physical" version of the same intervention.
+  if (g_quarantined) {
+    Serial2.println("ERR quarantined -- pod refuses to execute (send UNQUARANTINE to clear)");
+    return;
+  }
+
+  int s1 = line.indexOf(' ');
+  int s2 = line.indexOf(' ', s1 + 1);
+  if (s1 < 0 || s2 < 0) {
+    Serial2.println("ERR malformed RUN");
+    return;
+  }
+  int    fn_id     = line.substring(s1 + 1, s2).toInt();
+  String hex_input = line.substring(s2 + 1);
+
+  if (fn_id < 0 || fn_id >= N_FUNCTIONS) {
+    Serial2.printf("ERR unknown fn_id %d\n", fn_id);
+    return;
+  }
+
+  uint8_t input[64];
+  int in_len = hex_decode(hex_input.c_str(), hex_input.length(), input, sizeof(input));
+  if (in_len < 0) {
+    Serial2.println("ERR bad hex");
+    return;
+  }
+
+  uint8_t output[64];
+  size_t  out_len = 0;
+
+  // ===== Timed region -- everything between trigger HIGH and trigger LOW =====
+  // We snapshot all four timing-class channels back-to-back around the call:
+  //   cycles   : Xtensa CCOUNT             (always works)
+  //   micros   : esp_timer_get_time()      (always works, includes IRQ noise)
+  //   insns    : PMU PM0 (insns retired)   (best-effort, may flat-line)
+  //   branches : PMU PM1 (branches taken)  (best-effort, may flat-line)
+  // We hold the trigger HIGH for at least MIN_TRIGGER_US after the function
+  // returns so the Pico's ~1 us polling loop can always catch the rising
+  // edge even when the function under test executes in sub-microsecond time
+  // (e.g. strcmp_naive returning on a first-byte mismatch).
+  static const uint32_t MIN_TRIGGER_US = 200;
+  digitalWrite(PIN_TRIGGER_OUT, HIGH);
+  uint32_t trig_t0 = micros();
+  int64_t  us0 = esp_timer_get_time();
+  uint32_t i0  = read_pm0();
+  uint32_t b0  = read_pm1();
+  uint32_t t0  = get_ccount();
+  FUNCTIONS[fn_id](input, in_len, output, &out_len);
+  uint32_t t1  = get_ccount();
+  uint32_t b1  = read_pm1();
+  uint32_t i1  = read_pm0();
+  int64_t  us1 = esp_timer_get_time();
+  while ((micros() - trig_t0) < MIN_TRIGGER_US) { /* hold HIGH */ }
+  digitalWrite(PIN_TRIGGER_OUT, LOW);
+  // ===========================================================================
+
+  uint32_t cycles   = t1 - t0;
+  uint32_t insns    = i1 - i0;
+  uint32_t branches = b1 - b0;
+  uint32_t micros_  = (uint32_t)(us1 - us0);
+
+  char hex_output[2 * sizeof(output) + 1];
+  hex_encode(output, out_len, hex_output);
+
+  Serial2.printf("RES2 %u %u %u %u %s\n",
+                 (unsigned)cycles, (unsigned)micros_,
+                 (unsigned)insns,  (unsigned)branches,
+                 hex_output);
+  pings_seen++;
+}
