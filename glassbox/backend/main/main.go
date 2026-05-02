@@ -1,5 +1,9 @@
 package main
 
+import "log"
+
 func main() {
-	runagent()
+	if err := runagent(); err != nil {
+		log.Println(err)
+	}
 }
