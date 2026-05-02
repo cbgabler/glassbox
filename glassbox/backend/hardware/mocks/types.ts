@@ -34,9 +34,7 @@ export type Verdict =
   | "crash_detected"
   | "non_determinism_detected"
   | "static_warning"
-  | "key_recovered"
-  | "dependency_vuln_detected"
-  | "secret_exposed";
+  | "key_recovered";
 
 /** Severity ladder for TVLA results. Order = strongest first. */
 export type Severity =
@@ -194,10 +192,8 @@ export type FindingType =
   | "non_determinism"    // same input -> different output across reruns
   | "length_oracle"      // out_len correlates with secret in unintended ways
   | "memory_corruption"  // shadow sentinel tripped, stack canary tripped, heap poisoning fired
-  | "static"             // pre-flash linter / host static analyzer rule fired
-  | "cpa_key_recovery"   // CPA on power traces recovered (or attempted) a key
-  | "dependency_vuln"    // pip-audit / cargo-audit / npm audit / safety hit
-  | "secret_exposure";   // detect-secrets / gitleaks: API keys / tokens in source
+  | "static"             // pre-flash linter rule fired on the source file
+  | "cpa_key_recovery";  // CPA on power traces recovered (or attempted) a key
 
 export type FindingSeverity =
   | "CRITICAL"
@@ -300,40 +296,6 @@ export interface StaticFindingData {
 }
 export type StaticFinding = BaseFinding & { type: "static"; data: StaticFindingData };
 
-export interface DependencyVulnFindingData {
-  /** Package ecosystem: "pypi" | "npm" | "cargo" | "go" | "maven" | "rubygems" | "packagist" | "other". */
-  ecosystem: string;
-  package: string;
-  installed_version: string;
-  /** First version that fixes the issue, or null if no fix is available yet. */
-  fixed_version: string | null;
-  /** Advisory IDs (CVE / GHSA / OSV / RUSTSEC). */
-  advisory_ids: string[];
-  /** Tool that produced the finding (pip-audit, safety, cargo-audit, ...). */
-  tool: string;
-  /** Manifest file the package was discovered in. */
-  manifest: string;
-}
-export type DependencyVulnFinding = BaseFinding & {
-  type: "dependency_vuln";
-  data: DependencyVulnFindingData;
-};
-
-export interface SecretExposureFindingData {
-  /** Type of secret (aws_access_key, generic_high_entropy_string, jwt, ...). */
-  secret_type: string;
-  /** Tool that produced the finding (detect-secrets, gitleaks, ...). */
-  tool: string;
-  /** True if a verifier confirmed the credential is live. */
-  verified?: boolean;
-  /** Excerpt around the line, masked to avoid republishing the secret. */
-  excerpt: string;
-}
-export type SecretExposureFinding = BaseFinding & {
-  type: "secret_exposure";
-  data: SecretExposureFindingData;
-};
-
 export interface CpaFindingData {
   /** Per-byte recovery: best_guess (0..255), correlation, rank-of-true. */
   per_byte: {
@@ -358,9 +320,7 @@ export type Finding =
   | LengthOracleFinding
   | MemoryFinding
   | StaticFinding
-  | CpaFinding
-  | DependencyVulnFinding
-  | SecretExposureFinding;
+  | CpaFinding;
 
 export interface FindingsSummary {
   /** Total findings, including INFO/pass. */
