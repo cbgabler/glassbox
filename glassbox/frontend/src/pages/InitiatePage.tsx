@@ -16,7 +16,7 @@ export function InitiatePage() {
     try {
       const response = await startAudit(repoUrl)
       // Navigate to the dashboard with the newly minted runId
-      navigate(`/audit/\${response.run_id}`)
+      navigate(`/audit/${response.run_id}`)
     } catch (err) {
       console.error(err)
       setIsSubmitting(false)
