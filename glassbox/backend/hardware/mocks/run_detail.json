@@ -1,0 +1,388 @@
+{
+  "schema": "glassbox.run_detail.v1",
+  "id": "run_2026_0101",
+  "repo": "acme/login-service",
+  "commit_sha": "3f9a1c2",
+  "pr_number": 147,
+  "branch": "feat/new-login",
+  "function": "password_check",
+  "victim": {
+    "chip": "ESP32-WROOM-32",
+    "freq_mhz": 240,
+    "harness": "v2 quarantine-capable"
+  },
+  "monitor": {
+    "chip": "RP2040",
+    "trace_len": 256,
+    "sample_period_us": 4.0,
+    "model": "baseline.joblib",
+    "model_classes": [
+      "safe",
+      "timing_leak"
+    ]
+  },
+  "started_at": "2026-04-30T14:30:00Z",
+  "finished_at": "2026-04-30T14:30:18Z",
+  "duration_s": 18.3,
+  "verdict": "leak_detected",
+  "summary": {
+    "leak_channel": "cycles",
+    "leak_severity": "CRITICAL",
+    "leak_confidence": 0.94,
+    "calls_total": 13,
+    "calls_before_fire": 13,
+    "bytes_recovered": 0,
+    "secret_len": 8,
+    "quarantine_fired": true,
+    "quarantine_method": "kill_lines+nvs"
+  },
+  "tvla_summary": {
+    "channels": {
+      "cycles": {
+        "verdict": "CRITICAL",
+        "mean_a": 113.0,
+        "mean_b": 56.0
+      },
+      "micros": {
+        "verdict": "BELOW_QUANTUM",
+        "mean_a": 1.0,
+        "mean_b": 0.75
+      },
+      "insns": {
+        "verdict": "flat",
+        "mean_a": 0.0,
+        "mean_b": 0.0
+      },
+      "branches": {
+        "verdict": "flat",
+        "mean_a": 0.0,
+        "mean_b": 0.0
+      }
+    },
+    "leak_detected": true,
+    "strongest_channel": "cycles",
+    "strongest_severity": "CRITICAL"
+  },
+  "histogram_thumbnail": {
+    "fn": "strcmp_naive",
+    "channel": "cycles",
+    "min": 56,
+    "max": 113,
+    "argmax_byte": 104
+  },
+  "sample_traces": [
+    {
+      "trace_id": "tr_run_001",
+      "fn": "strcmp_naive",
+      "fn_id": 1,
+      "label": "timing_leak",
+      "input_byte": 0,
+      "hex_input": "0000000000000000",
+      "cycles": 56,
+      "active_samples": 14,
+      "power_preview": [
+        1055,
+        1197,
+        1258,
+        1330,
+        1403,
+        1490,
+        1512,
+        1480,
+        1450,
+        1427,
+        1378,
+        1249,
+        1118,
+        1064,
+        1042,
+        1051,
+        1041,
+        1047,
+        1051,
+        1051,
+        1042,
+        1049,
+        1053,
+        1062,
+        1056,
+        1059,
+        1055,
+        1045,
+        1047,
+        1057,
+        1045,
+        1041
+      ]
+    },
+    {
+      "trace_id": "tr_run_002",
+      "fn": "strcmp_naive",
+      "fn_id": 1,
+      "label": "timing_leak",
+      "input_byte": 104,
+      "hex_input": "6800000000000000",
+      "cycles": 63,
+      "active_samples": 27,
+      "power_preview": [
+        1039,
+        1108,
+        1183,
+        1227,
+        1267,
+        1290,
+        1323,
+        1368,
+        1399,
+        1454,
+        1492,
+        1510,
+        1507,
+        1500,
+        1479,
+        1455,
+        1451,
+        1444,
+        1442,
+        1415,
+        1378,
+        1329,
+        1248,
+        1189,
+        1136,
+        1092,
+        1057,
+        1055,
+        1048,
+        1058,
+        1046,
+        1047
+      ]
+    },
+    {
+      "trace_id": "tr_run_003",
+      "fn": "strcmp_naive",
+      "fn_id": 1,
+      "label": "timing_leak",
+      "input_byte": 104,
+      "hex_input": "68756e7465723221",
+      "cycles": 112,
+      "active_samples": 70,
+      "power_preview": [
+        1048,
+        1074,
+        1127,
+        1143,
+        1153,
+        1176,
+        1204,
+        1229,
+        1234,
+        1255,
+        1246,
+        1273,
+        1290,
+        1290,
+        1294,
+        1318,
+        1313,
+        1332,
+        1354,
+        1359,
+        1405,
+        1401,
+        1405,
+        1449,
+        1461,
+        1474,
+        1493,
+        1506,
+        1509,
+        1521,
+        1522,
+        1526
+      ]
+    },
+    {
+      "trace_id": "tr_run_004",
+      "fn": "strcmp_safe",
+      "fn_id": 2,
+      "label": "safe",
+      "input_byte": 0,
+      "hex_input": "0000000000000000",
+      "cycles": 144,
+      "active_samples": 88,
+      "power_preview": [
+        1046,
+        1075,
+        1093,
+        1113,
+        1144,
+        1149,
+        1184,
+        1190,
+        1211,
+        1218,
+        1229,
+        1240,
+        1261,
+        1250,
+        1272,
+        1274,
+        1282,
+        1308,
+        1296,
+        1304,
+        1307,
+        1315,
+        1339,
+        1348,
+        1372,
+        1382,
+        1388,
+        1422,
+        1434,
+        1440,
+        1460,
+        1481
+      ]
+    },
+    {
+      "trace_id": "tr_run_005",
+      "fn": "strcmp_safe",
+      "fn_id": 2,
+      "label": "safe",
+      "input_byte": 104,
+      "hex_input": "68756e7465723221",
+      "cycles": 143,
+      "active_samples": 88,
+      "power_preview": [
+        1042,
+        1075,
+        1096,
+        1108,
+        1139,
+        1155,
+        1169,
+        1190,
+        1200,
+        1225,
+        1237,
+        1251,
+        1255,
+        1265,
+        1267,
+        1284,
+        1281,
+        1298,
+        1298,
+        1304,
+        1323,
+        1343,
+        1348,
+        1350,
+        1355,
+        1368,
+        1397,
+        1411,
+        1409,
+        1438,
+        1463,
+        1467
+      ]
+    }
+  ],
+  "quarantine_events_id": "quarantine_events.json",
+  "orchestrator_id": "orchestrator_report.json",
+  "live_attack_stream_id": "live_attack_stream.jsonl",
+  "byte_histogram_id": "byte_histogram.json",
+  "tvla_report_id": "tvla_report.json",
+  "github": {
+    "comment_state": "posted",
+    "comment_url": "https://github.com/acme/login-service/pull/147#issuecomment-9999",
+    "comment_md": "\u274c **Timing leak detected** in `password_check` (cycles, 94% confidence)\n\nGlassBox observed perfect determinism in the cycle channel across 1280 traces. The pod fired hardware quarantine after 13 attacker probes."
+  },
+  "findings": [
+    {
+      "id": "f_001",
+      "type": "tvla",
+      "severity": "CRITICAL",
+      "title": "Side-channel leak on cycles (order 1, |t|=312.4 > 4.5)",
+      "detail": "Welch's t-test rejects H0 (input-independent execution) on the cycles channel with |t|=312.4. The function's mean cycles measurably depends on the secret input.",
+      "remediation": "Stored credential checks should never short-circuit on the first wrong byte. Hash both sides (bcrypt/argon2) and compare with a constant-time equality.",
+      "data": {
+        "channel": "cycles",
+        "order": 1,
+        "t_abs": 312.4,
+        "threshold": 4.5
+      }
+    },
+    {
+      "id": "f_002",
+      "type": "tvla",
+      "severity": "HIGH",
+      "title": "Side-channel leak on power (order 1, |t|=27.8 > 4.5)",
+      "detail": "Power-channel TVLA fires at sample 124, ~62% through the function -- consistent with the early-return branch.",
+      "data": {
+        "channel": "power",
+        "order": 1,
+        "t_abs": 27.8,
+        "threshold": 4.5,
+        "argmax_sample": 124,
+        "fraction_through_function": 0.62
+      }
+    },
+    {
+      "id": "f_003",
+      "type": "static",
+      "severity": "HIGH",
+      "title": "[CT001] `if` condition reads a secret-named value",
+      "detail": "Static analysis on `gb_target.cpp:32` flagged a likely side-channel pattern before flashing. Rule CT001.\n\n```c\n        if (secret[i] != STORED_HASH[i]) {\n```",
+      "remediation": "Replace the conditional with a constant-time mask: compute both branches and select with `(mask & a) | (~mask & b)`.",
+      "source": { "file": "gb_target.cpp", "line": 32, "col": 5 },
+      "data": {
+        "rule_id": "CT001",
+        "excerpt": "        if (secret[i] != STORED_HASH[i]) {"
+      }
+    },
+    {
+      "id": "f_004",
+      "type": "length_oracle",
+      "severity": "pass",
+      "title": "Output length is constant (no length oracle)",
+      "detail": "`out_len` did not vary across the campaign -- the function does not leak via its return-buffer length.",
+      "data": {
+        "out_len_histogram": { "1": 1280 },
+        "t_abs": null,
+        "variable": false
+      }
+    },
+    {
+      "id": "f_005",
+      "type": "non_determinism",
+      "severity": "pass",
+      "title": "Non-deterministic output (0/64 inputs)",
+      "detail": "For 0 of 64 inputs, two back-to-back runs of the function with the same input produced different outputs.",
+      "data": { "disagreements": 0, "tested": 64, "examples": [] }
+    },
+    {
+      "id": "f_006",
+      "type": "crash",
+      "severity": "pass",
+      "title": "Timeout during sweep (0/1280 traces)",
+      "detail": "0 of 1280 traces terminated abnormally (timeout).",
+      "data": { "kind": "timeout", "count": 0, "total": 1280 }
+    }
+  ],
+  "findings_summary": {
+    "total": 6,
+    "by_severity": {
+      "CRITICAL": 1, "HIGH": 2, "MEDIUM": 0, "LOW": 0, "INFO": 0, "pass": 3
+    },
+    "by_type": {
+      "tvla": 2, "crash": 1, "non_determinism": 1, "length_oracle": 1,
+      "memory_corruption": 0, "static": 1, "cpa_key_recovery": 0
+    },
+    "worst_severity": "CRITICAL"
+  }
+}
