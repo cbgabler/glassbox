@@ -9,6 +9,9 @@ try {
     $binDir = Join-Path $scriptDir 'bin'
     if (-Not (Test-Path $binDir)) { New-Item -ItemType Directory -Path $binDir | Out-Null }
 
+    Write-Host "Compiling all packages..."
+    & go test ./...
+
     Write-Host "Enumerating packages..."
     $pkgs = & go list ./...
     foreach ($pkg in $pkgs) {
@@ -22,6 +25,12 @@ try {
         if ($IsWindows) { $out = $out + '.exe' }
         Write-Host "Building $pkg -> $out"
         & go build -o $out $pkg
+
+        if ($pkgType -eq 'main' -and $pkgName -eq 'main') {
+            $rootExe = Join-Path $scriptDir 'main.exe'
+            Copy-Item -Force $out $rootExe
+            Write-Host "Copied $out -> $rootExe"
+        }
     }
     Write-Host "Build complete. Binaries are in: $binDir"
 } finally {

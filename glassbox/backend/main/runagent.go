@@ -67,7 +67,15 @@ func createProvider(ag *agent.Agent) (transport.Provider, error) {
 	}
 }
 
-func runagent() {
+func runagent() error {
+	defer func() {
+		if err := cleanup.RemoveAllRuns(); err != nil {
+			log.Printf("cleanup: failed to remove runs: %v", err)
+		} else {
+			log.Println("cleanup: removed run workspaces")
+		}
+	}()
+
 	// Load environment variables from .env file
 	if err := godotenv.Load("../.env"); err != nil {
 		log.Println("No .env file found, using system environment variables")
@@ -76,24 +84,15 @@ func runagent() {
 	// Parse agent config
 	ag, err := parseagentprotocol.ParseAgentConfig()
 	if err != nil {
-		log.Fatal("Failed to parse agent config:", err)
+		return fmt.Errorf("failed to parse agent config: %w", err)
 	}
 
 	// Start all servers and track their processes
 	log.Println("Starting MCP servers...")
 	processes, err := StartAllServers(ag)
 	if err != nil {
-		log.Fatal("Failed to start servers:", err)
+		return fmt.Errorf("failed to start servers: %w", err)
 	}
-
-	// Ensure runs are removed on normal exit as well as on signals
-	defer func() {
-		if err := cleanup.RemoveAllRuns(); err != nil {
-			log.Printf("cleanup: failed to remove runs: %v", err)
-		} else {
-			log.Println("cleanup: removed run workspaces")
-		}
-	}()
 
 	// Setup graceful shutdown
 	setupGracefulShutdown(processes)
@@ -108,7 +107,7 @@ func runagent() {
 	// Create provider based on model
 	provider, err := createProvider(ag)
 	if err != nil {
-		log.Fatal("Failed to create provider:", err)
+		return fmt.Errorf("failed to create provider: %w", err)
 	}
 
 	log.Printf("Using provider: %s", provider.GetProviderName())
@@ -174,6 +173,7 @@ func runagent() {
 	}
 
 	log.Println("Goodbye!")
+	return nil
 }
 
 // setupGracefulShutdown handles Ctrl+C and kills server processes
@@ -200,7 +200,7 @@ func setupGracefulShutdown(processes []*os.Process) {
 			log.Println("cleanup: removed run workspaces")
 		}
 
-		log.Println("Cleanup complete. Exiting.")
+		log.Println("cleanup complete. Exiting.")
 		os.Exit(0)
 	}()
 }
