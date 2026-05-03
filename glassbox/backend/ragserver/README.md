@@ -1,5 +1,12 @@
 # GlassBox RAG Server
 
+## Visual test (quick)
+```powershell
+cd glassbox/backend/ragserver
+venv\Scripts\python.exe -m pip install -r requirements.txt
+venv\Scripts\python.exe visual_test.py
+```
+
 ## What is it?
 
 The **RAG server** is a lightweight Python side‑car that provides Retrieval‑Augmented Generation (RAG) capabilities for the GlassBox security agent.  It stores audit findings and code snippets in a local **FAISS** vector database, allowing the main Claude‑based agent to retrieve relevant information quickly during a scan.
@@ -8,6 +15,15 @@ The **RAG server** is a lightweight Python side‑car that provides Retrieval‑
 - Persistently index code and vulnerability findings.
 - Offer semantic search via a FastAPI MCP tool server.
 - Bridge the main Go agent with high‑quality embeddings (NVIDIA Nemotron for findings, local Sentence‑Transformers for code).
+
+## What this enables for the agent
+- Index findings semantically so retrieval works by meaning, not just keywords.
+- Search findings by intent and return the best matches with severity and advice.
+- Store and retrieve code snippets with file/line context for natural-language queries.
+- Keep findings and code in the same run id for cross-referencing issues to code.
+- Persist indexes so the agent can answer without re-indexing every run.
+- Support fuzzy, semantic queries even when wording differs.
+- Run multiple searches in one turn for richer answers.
 
 ## Tech Stack
 - **Python 3.8+**
@@ -41,5 +57,3 @@ uvicorn server:app --reload --port 8000
 Or with the Go agent, which launches the server automatically.
 
 ---
-
-*Feel free to extend the visualizer, add more embedder models, or integrate authentication as needed.*
