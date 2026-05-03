@@ -56,20 +56,37 @@ import (
 // -----------------------------------------------------------------------------
 
 const (
-	relAutoFlash   = "glassbox/backend/hardware/runner/auto_flash.py"
+	// scan_target.py is the per-target orchestrator: install -> ct_lint ->
+	// flash (compile+upload+verify) -> collect (TVLA campaign) -> analyze
+	// (Welch's t-test + CPA) -> emit JSON TargetReport on stdout. We invoke
+	// it once per harness-compatible source file.
+	relScanTarget  = "glassbox/backend/hardware/runner/scan_target.py"
 	relGbTargetCpp = "glassbox/backend/hardware/esp/harness/gb_target.cpp"
 	relRunnerVenv  = "glassbox/backend/hardware/runner/.venv/bin/python"
 
-	verifyOKMarker = "post-flash verification OK"
-	verifyFailMark = "post-flash verification FAILED"
-	verifyTimeMark = "post-flash verification TIMEOUT"
+	// scan_target.py logs "[scan] --- stage: <name> ---" on stderr at each
+	// pipeline boundary. We use that to drive the per-target step field.
+	scanStageMarker = "[scan] --- stage: "
+
+	// Substrings we still grep on stderr to surface common environment
+	// problems straight to the agent rather than burying them inside the
+	// scanner's traceback.
 	bridgeAckMiss  = "Pico did not enter bridge mode"
 	esptoolMissing = "No module named esptool"
+	noPicoDetected = "no Pico detected via USB"
 
 	defaultBridgeSeconds  = 90
-	defaultPerTargetSecs  = 240
+	// Per-target hard timeout. With --n 500 we expect ~50s of capture +
+	// ~30s of flash + a few seconds of analyze; 360s leaves slack for
+	// slow Wi-Fi/USB while still aborting truly stuck runs.
+	defaultPerTargetSecs  = 360
 	defaultPostSuccessSec = 2
 	defaultPostFailExtra  = 5
+
+	// Number of traces per TVLA group. Higher = more sensitive but slower.
+	// 500 matches scan_target.DEFAULT_N_PER_GROUP and gives ~|t|>4.5
+	// detection power on the LX6 PMU channels.
+	defaultNPerGroup = 500
 
 	listenPort = ":8084"
 )
@@ -173,16 +190,47 @@ type startAuditResponse struct {
 	StatusHint string   `json:"status_hint"`
 }
 
+// targetResult is one source file's audit outcome. The first half is run
+// telemetry (state + timing); the second half is the TargetReport
+// scan_target.py emitted on stdout, surfaced verbatim so the agent can
+// quote real TVLA / CPA / crash / ct_lint findings instead of pattern-
+// matching the source itself.
 type targetResult struct {
 	Name         string  `json:"name"`
 	Path         string  `json:"path"`
-	State        string  `json:"state"` // queued|copy|compile|esptool|booting|verifying|pass|fail|skipped|cancelled
+	State        string  `json:"state"` // queued|install|ct_lint|flash|collect|analyze|pass|fail|skipped|cancelled
 	Pass         bool    `json:"pass"`
 	Reason       string  `json:"reason,omitempty"`
 	StartedAt    string  `json:"started_at,omitempty"`
 	FinishedAt   string  `json:"finished_at,omitempty"`
 	DurationSecs float64 `json:"duration_secs,omitempty"`
 	BridgeLocked bool    `json:"bridge_locked,omitempty"`
+
+	// ---- TargetReport fields (mirrors scan_target.TargetReport.to_dict) ----
+	// Verdict is the headline category derived from the worst finding.
+	// Examples: "safe", "leak_detected", "crash_detected", "key_recovered",
+	// "memory_corruption_detected", "static_warning". Empty when the
+	// scanner crashed before emitting a report.
+	Verdict string `json:"verdict,omitempty"`
+	// WorstSeverity is the highest severity in `findings`, or "pass" if
+	// no finding was non-pass. Same enum as Finding.severity.
+	WorstSeverity string `json:"worst_severity,omitempty"`
+	// Findings is the verbatim list of Finding objects from the report.
+	// Each entry has the polymorphic shape documented in
+	// pipeline/findings.py: {id, type, severity, title, detail, data,
+	// remediation?, source?}. The agent is expected to render these
+	// (one <<code>> block per finding) rather than re-deriving findings
+	// from the source.
+	Findings []map[string]any `json:"findings,omitempty"`
+	// FindingsSummary mirrors TargetReport.summary -- counts by severity
+	// and by type. Useful for the agent's chat-panel rollup.
+	FindingsSummary map[string]any `json:"findings_summary,omitempty"`
+	// NTraces is how many traces actually survived the collect stage
+	// (post-crash filtering). 0 means the scanner never reached collect.
+	NTraces int `json:"n_traces,omitempty"`
+	// StageSecs maps stage name (install/ct_lint/flash/collect/analyze)
+	// to wall time in seconds, so the dashboard can show a flame chart.
+	StageSecs map[string]float64 `json:"stage_secs,omitempty"`
 }
 
 type auditStatusResponse struct {
@@ -264,13 +312,12 @@ type audit struct {
 
 	id         string
 	repoRoot   string
-	autoFlash  string
+	scanTarget string // absolute path to scan_target.py
 	python     string
-	gbTarget   string
-	gbBackup   string
 	bridgeSecs int
 	espPort    string
 	picoPort   string
+	nPerGroup  int
 
 	state      string // running|done|cancelled|failed
 	startedAt  time.Time
@@ -348,7 +395,14 @@ func (a *audit) setStep(idx int, step string) {
 	a.lastUpdate = time.Now()
 }
 
-func (a *audit) finishTarget(idx int, pass bool, reason string, bridgeLocked bool) {
+// finishTarget records the outcome of one target. `pass` is the
+// scanner-level pass/fail (true = scanner finished cleanly AND verdict
+// was "safe"; false = scanner crashed OR verdict was non-safe).
+// `report` is the parsed TargetReport from scan_target.py's stdout, or
+// nil if the scanner died before emitting one (in which case `reason`
+// carries the human explanation).
+func (a *audit) finishTarget(idx int, pass bool, reason string,
+	bridgeLocked bool, report *targetReportPayload) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if idx < 0 || idx >= len(a.results) {
@@ -362,12 +416,35 @@ func (a *audit) finishTarget(idx int, pass bool, reason string, bridgeLocked boo
 	if t, err := time.Parse(time.RFC3339, r.StartedAt); err == nil {
 		r.DurationSecs = time.Since(t).Seconds()
 	}
+	if report != nil {
+		r.Verdict = report.Verdict
+		r.WorstSeverity = report.WorstSeverity
+		r.Findings = report.Findings
+		r.FindingsSummary = report.Summary
+		r.NTraces = report.NTraces
+		r.StageSecs = report.StageSecs
+	}
 	if pass {
 		r.State = "pass"
 	} else {
 		r.State = "fail"
 	}
 	a.lastUpdate = time.Now()
+}
+
+// targetReportPayload mirrors TargetReport.to_dict() in
+// glassbox/backend/hardware/runner/pipeline/findings.py. We only json-
+// decode the fields hardwarego surfaces back to the agent; extra
+// fields (e.g. duration_secs computed by Python) are tolerated by
+// json.Unmarshal silently.
+type targetReportPayload struct {
+	Target        string             `json:"target"`
+	Verdict       string             `json:"verdict"`
+	WorstSeverity string             `json:"worst_severity"`
+	Findings      []map[string]any   `json:"findings"`
+	Summary       map[string]any     `json:"summary"`
+	NTraces       int                `json:"n_traces"`
+	StageSecs     map[string]float64 `json:"stage_secs"`
 }
 
 // -----------------------------------------------------------------------------
@@ -387,14 +464,23 @@ func (s *server) latest() *audit {
 	return s.current
 }
 
-func (s *server) tryStart(a *audit) bool {
+// tryStart claims the shared-hardware slot for `a`. Returns
+// (true, "") on success, or (false, existingAuditID) when another
+// audit is in flight. The single-slot rule is enforced because all
+// audits share one ESP32 + one Pico bridge -- a second concurrent run
+// would race the first for /dev/cu.* and produce both a corrupted
+// flash and useless traces. The agent occasionally fires duplicate
+// start_hardware_audit calls (network retry, model double-step, etc.),
+// so returning a structured "you already have one running, here's its
+// id" beats silently allowing the duplicate.
+func (s *server) tryStart(a *audit) (bool, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.current != nil && s.current.state == "running" {
-		return false
+		return false, s.current.id
 	}
 	s.current = a
-	return true
+	return true, ""
 }
 
 // -----------------------------------------------------------------------------
@@ -487,10 +573,10 @@ func (s *server) handleStartAudit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot locate glassbox repo: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	autoFlash := filepath.Join(glassboxRoot, relAutoFlash)
+	scanTarget := filepath.Join(glassboxRoot, relScanTarget)
 	gbTarget := filepath.Join(glassboxRoot, relGbTargetCpp)
-	if !fileExists(autoFlash) {
-		http.Error(w, "auto_flash.py missing at "+autoFlash, http.StatusInternalServerError)
+	if !fileExists(scanTarget) {
+		http.Error(w, "scan_target.py missing at "+scanTarget, http.StatusInternalServerError)
 		return
 	}
 	if !fileExists(gbTarget) {
@@ -558,12 +644,12 @@ func (s *server) handleStartAudit(w http.ResponseWriter, r *http.Request) {
 	a := &audit{
 		id:         fmt.Sprintf("audit-%d", time.Now().UnixNano()),
 		repoRoot:   repo,
-		autoFlash:  autoFlash,
+		scanTarget: scanTarget,
 		python:     py,
-		gbTarget:   gbTarget,
 		bridgeSecs: bridgeSecs,
 		espPort:    req.ESPPort,
 		picoPort:   req.PicoPort,
+		nPerGroup:  defaultNPerGroup,
 		state:      "running",
 		startedAt:  time.Now(),
 		lastUpdate: time.Now(),
@@ -578,8 +664,17 @@ func (s *server) handleStartAudit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if !s.tryStart(a) {
-		http.Error(w, "another audit is already running; cancel it first or wait", http.StatusConflict)
+	if ok, existingID := s.tryStart(a); !ok {
+		writeJSONError(w, http.StatusConflict, jsonErrorResponse{
+			Error:     "another audit is already running on the shared hardware",
+			ErrorCode: "audit_in_progress",
+			Details: map[string]any{
+				"existing_audit_id": existingID,
+				"hint":              "poll get_hardware_audit_status (audit_id omitted) for progress, or cancel_hardware_audit before starting a new one",
+			},
+			Hint: "Do NOT call start_hardware_audit again. Poll get_hardware_audit_status with the existing_audit_id from details, OR call cancel_hardware_audit first if the user explicitly asked you to abort.",
+			NextAction: "get_hardware_audit_status",
+		})
 		return
 	}
 
@@ -662,16 +757,7 @@ func runAudit(a *audit) {
 		}
 		a.summary = fmt.Sprintf("%d passed, %d failed (of %d targets)", passed, failed, len(a.targets))
 		a.mu.Unlock()
-		restoreHarnessTarget(a)
 	}()
-
-	if err := backupHarnessTarget(a); err != nil {
-		a.mu.Lock()
-		a.state = "failed"
-		a.errorMsg = "backup gb_target.cpp: " + err.Error()
-		a.mu.Unlock()
-		return
-	}
 
 	for i, t := range a.targets {
 		// Inter-target recovery: if previous target left the Pico stuck
@@ -704,19 +790,29 @@ func runAudit(a *audit) {
 	}
 }
 
-// runOneTarget returns false if the audit was cancelled mid-target.
+// runOneTarget invokes scan_target.py against ONE source file, parses
+// its TargetReport JSON from stdout, and writes the result back into
+// the audit. Returns false only when the audit was cancelled mid-run.
+//
+// scan_target.py owns gb_target.cpp install/restore itself; we don't
+// pre-copy. The protocol is:
+//
+//   stdout: a single line of JSON (the TargetReport.to_dict() blob)
+//           emitted right at the end. With --out -, no file is written.
+//   stderr: live progress -- "[scan] --- stage: <name> ---" markers
+//           plus per-stage chatter. We mirror the stage name to the
+//           agent via setStep() so the user can see "currently capturing
+//           traces" etc. Any familiar error substring (no Pico, esptool
+//           missing, bridge ack miss) gets sticky-flagged so we can give
+//           the agent a precise reason on failure.
 func runOneTarget(a *audit, idx int, t targetInfo) bool {
-	a.setStep(idx, "copy")
-	if err := copyFile(t.Path, a.gbTarget); err != nil {
-		a.finishTarget(idx, false, "copy into harness failed: "+err.Error(), false)
-		return true
-	}
-
 	args := []string{
 		"-u",
-		a.autoFlash,
-		"--via-pico",
+		a.scanTarget,
+		t.Path,
+		"--n", fmt.Sprintf("%d", a.nPerGroup),
 		"--bridge-seconds", fmt.Sprintf("%d", a.bridgeSecs),
+		"--out", "-",
 	}
 	if a.espPort != "" {
 		args = append(args, "--esp-port", a.espPort)
@@ -742,57 +838,98 @@ func runOneTarget(a *audit, idx int, t targetInfo) bool {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	}
 
-	stdout, err := cmd.StdoutPipe()
+	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		a.finishTarget(idx, false, "stdout pipe: "+err.Error(), true)
+		a.finishTarget(idx, false, "stdout pipe: "+err.Error(), true, nil)
 		return true
 	}
-	cmd.Stderr = cmd.Stdout
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		a.finishTarget(idx, false, "stderr pipe: "+err.Error(), true, nil)
+		return true
+	}
 
-	a.setStep(idx, "compile")
+	a.setStep(idx, "starting")
 	if err := cmd.Start(); err != nil {
-		a.finishTarget(idx, false, "start auto_flash: "+err.Error(), false)
+		a.finishTarget(idx, false, "start scan_target: "+err.Error(), false, nil)
 		return true
 	}
 
-	sawVerifyOK := false
-	sawVerifyFail := false
-	sawBridgeMiss := false
-	sawEsptoolMissing := false
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		log.Printf("[audit %s][%d/%d %s] %s", a.id, idx+1, len(a.targets), t.Name, line)
+	// Drain stderr concurrently for progress + sticky error flags.
+	type stderrSummary struct {
+		bridgeMiss     bool
+		esptoolMissing bool
+		noPico         bool
+		lastFatal      string
+	}
+	errCh := make(chan stderrSummary, 1)
+	go func() {
+		s := stderrSummary{}
+		scanner := bufio.NewScanner(stderrPipe)
+		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			log.Printf("[audit %s][%d/%d %s][stderr] %s",
+				a.id, idx+1, len(a.targets), t.Name, line)
 
-		switch {
-		case strings.Contains(line, "esptool: write_flash"),
-			strings.Contains(line, "esptool: flash OK"):
-			a.setStep(idx, "esptool")
-		case strings.Contains(line, "waiting") && strings.Contains(line, "bridge auto-exit"):
-			a.setStep(idx, "booting")
-		case strings.Contains(line, "verifying via Pico"):
-			a.setStep(idx, "verifying")
+			if strings.HasPrefix(line, scanStageMarker) {
+				stage := strings.TrimPrefix(line, scanStageMarker)
+				stage = strings.TrimSuffix(stage, " ---")
+				stage = strings.TrimSpace(stage)
+				if stage != "" {
+					a.setStep(idx, stage)
+				}
+				continue
+			}
+
+			switch {
+			case strings.Contains(line, bridgeAckMiss):
+				s.bridgeMiss = true
+			case strings.Contains(line, esptoolMissing):
+				s.esptoolMissing = true
+			case strings.Contains(line, noPicoDetected):
+				s.noPico = true
+			}
+			if strings.Contains(line, "FATAL:") {
+				if i := strings.Index(line, "FATAL:"); i >= 0 {
+					s.lastFatal = strings.TrimSpace(line[i:])
+				}
+			}
 		}
-		switch {
-		case strings.Contains(line, verifyOKMarker):
-			sawVerifyOK = true
-		case strings.Contains(line, verifyFailMark),
-			strings.Contains(line, verifyTimeMark):
-			sawVerifyFail = true
-		case strings.Contains(line, bridgeAckMiss):
-			sawBridgeMiss = true
-		case strings.Contains(line, esptoolMissing):
-			sawEsptoolMissing = true
+		errCh <- s
+	}()
+
+	// scan_target.py prints exactly one JSON blob to stdout (the
+	// TargetReport). auto_flash.py and arduino-cli pipe their own
+	// chatter through stdout too, though, so we log non-JSON lines
+	// as they arrive (compile errors, esptool progress, etc. would
+	// otherwise be invisible) and only buffer them for the JSON
+	// parser at the end. Single-line JSON wire format means
+	// stdoutBytes stays bounded.
+	var stdoutBuf strings.Builder
+	stdoutScanner := bufio.NewScanner(stdoutPipe)
+	stdoutScanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	for stdoutScanner.Scan() {
+		line := stdoutScanner.Text()
+		stdoutBuf.WriteString(line)
+		stdoutBuf.WriteByte('\n')
+		// Only the report lands as a single-line JSON object; everything
+		// else is build/flash chatter we want visible in the server log.
+		if !strings.HasPrefix(strings.TrimSpace(line), "{") {
+			log.Printf("[audit %s][%d/%d %s][stdout] %s",
+				a.id, idx+1, len(a.targets), t.Name, line)
 		}
 	}
+	stdoutBytes := []byte(stdoutBuf.String())
 	waitErr := cmd.Wait()
+	stderrSum := <-errCh
 
 	if ctx.Err() == context.DeadlineExceeded {
-		a.finishTarget(idx, false, fmt.Sprintf("hard timeout after %ds", defaultPerTargetSecs), true)
+		a.finishTarget(idx, false,
+			fmt.Sprintf("hard timeout after %ds", defaultPerTargetSecs),
+			true, nil)
 		return true
 	}
-	// User-cancellation: ctx was cancelled but not by deadline -> by handleCancel.
 	if ctx.Err() == context.Canceled {
 		a.markCancelled(idx)
 		return false
@@ -804,26 +941,78 @@ func runOneTarget(a *audit, idx int, t targetInfo) bool {
 		if errors.As(waitErr, &exitErr) {
 			rc = exitErr.ExitCode()
 		} else {
-			a.finishTarget(idx, false, "wait: "+waitErr.Error(), true)
+			a.finishTarget(idx, false, "wait: "+waitErr.Error(), true, nil)
 			return true
 		}
 	}
 
-	switch {
-	case rc == 0 && sawVerifyOK:
-		a.finishTarget(idx, true, "verify OK", false)
-	case rc == 0 && !sawVerifyOK:
-		a.finishTarget(idx, true, "rc=0 (verify marker missing)", false)
-	case sawVerifyFail:
-		a.finishTarget(idx, false, fmt.Sprintf("verify failed (rc=%d)", rc), true)
-	case sawEsptoolMissing:
-		a.finishTarget(idx, false, "esptool missing in this Python (run: pip install esptool)", true)
-	case sawBridgeMiss:
-		a.finishTarget(idx, false, "Pico did not ACK BRIDGE (likely still locked from previous attempt)", true)
-	default:
-		a.finishTarget(idx, false, fmt.Sprintf("auto_flash rc=%d", rc), true)
+	// Parse stdout JSON. scan_target.py exits 0 on a clean run AND on
+	// "found bugs" -- the JSON is the source of truth, not the rc.
+	report := parseScanReport(stdoutBytes)
+
+	if report == nil {
+		// Scanner didn't emit a TargetReport at all -- env-level failure.
+		// Pick the most helpful reason we can from stderr.
+		switch {
+		case stderrSum.noPico:
+			a.finishTarget(idx, false,
+				"no Pico detected via USB; plug it in or pass --pico-port",
+				true, nil)
+		case stderrSum.esptoolMissing:
+			a.finishTarget(idx, false,
+				"esptool missing in this Python (run: pip install esptool)",
+				true, nil)
+		case stderrSum.bridgeMiss:
+			a.finishTarget(idx, false,
+				"Pico did not ACK BRIDGE (still locked from previous run?)",
+				true, nil)
+		case stderrSum.lastFatal != "":
+			a.finishTarget(idx, false,
+				"scan_target: "+stderrSum.lastFatal, true, nil)
+		default:
+			a.finishTarget(idx, false,
+				fmt.Sprintf("scan_target rc=%d, no JSON report", rc),
+				true, nil)
+		}
+		return true
 	}
+
+	// We have a real report. "Pass" at the audit level means the
+	// verdict is `safe` (no findings worse than INFO/pass); anything
+	// else is a fail.
+	pass := report.Verdict == "safe"
+	reason := fmt.Sprintf("verdict=%s worst=%s findings=%d",
+		report.Verdict, report.WorstSeverity, len(report.Findings))
+	a.finishTarget(idx, pass, reason, false, report)
 	return true
+}
+
+// parseScanReport tolerates non-JSON noise on stdout (warnings, build
+// chatter from misbehaving tools, etc.) by scanning for the LAST line
+// that parses as a JSON object. scan_target.py's JSON is always one
+// line and always last on stdout, so this is robust without us having
+// to negotiate framing.
+func parseScanReport(stdout []byte) *targetReportPayload {
+	if len(stdout) == 0 {
+		return nil
+	}
+	lines := strings.Split(string(stdout), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" || !strings.HasPrefix(line, "{") {
+			continue
+		}
+		var rep targetReportPayload
+		if err := json.Unmarshal([]byte(line), &rep); err != nil {
+			continue
+		}
+		if rep.Verdict == "" && len(rep.Findings) == 0 {
+			// Looked like JSON but isn't our schema; keep scanning.
+			continue
+		}
+		return &rep
+	}
+	return nil
 }
 
 func (a *audit) markCancelled(idx int) {
@@ -940,50 +1129,13 @@ func readUpTo(path string, max int64) ([]byte, error) {
 }
 
 // -----------------------------------------------------------------------------
-// Harness backup/restore
-// -----------------------------------------------------------------------------
-
-func backupHarnessTarget(a *audit) error {
-	tmp, err := os.CreateTemp("", "gb_target.cpp.bak.*")
-	if err != nil {
-		return err
-	}
-	tmp.Close()
-	if err := copyFile(a.gbTarget, tmp.Name()); err != nil {
-		os.Remove(tmp.Name())
-		return err
-	}
-	a.mu.Lock()
-	a.gbBackup = tmp.Name()
-	a.mu.Unlock()
-	log.Printf("[audit %s] backed up %s -> %s", a.id, a.gbTarget, tmp.Name())
-	return nil
-}
-
-func restoreHarnessTarget(a *audit) {
-	a.mu.Lock()
-	bak := a.gbBackup
-	a.gbBackup = ""
-	a.mu.Unlock()
-	if bak == "" {
-		return
-	}
-	if err := copyFile(bak, a.gbTarget); err != nil {
-		log.Printf("[audit %s] WARNING: failed to restore harness: %v", a.id, err)
-		return
-	}
-	os.Remove(bak)
-	log.Printf("[audit %s] restored harness gb_target.cpp", a.id)
-}
-
-// -----------------------------------------------------------------------------
 // Path resolution + small helpers
 // -----------------------------------------------------------------------------
 
 func resolveGlassboxRoot() (string, error) {
 	// Prefer the env var if set (the parent agent process can pin this).
 	if v := os.Getenv("GLASSBOX_ROOT"); v != "" {
-		if dirExists(filepath.Join(v, relAutoFlash[:strings.LastIndex(relAutoFlash, "/")])) {
+		if dirExists(filepath.Join(v, relScanTarget[:strings.LastIndex(relScanTarget, "/")])) {
 			return v, nil
 		}
 	}
@@ -991,7 +1143,7 @@ func resolveGlassboxRoot() (string, error) {
 	cwd, _ := os.Getwd()
 	dir := cwd
 	for i := 0; i < 8; i++ {
-		if fileExists(filepath.Join(dir, relAutoFlash)) {
+		if fileExists(filepath.Join(dir, relScanTarget)) {
 			return dir, nil
 		}
 		parent := filepath.Dir(dir)
@@ -1022,19 +1174,12 @@ func resolvePython(glassboxRoot string) (string, error) {
 	return "", errors.New("no python found (looked for runner/.venv/bin/python, python3, python)")
 }
 
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-	_, err = io.Copy(out, in)
-	return err
+// collapseWhitespace replaces every run of whitespace (including newlines)
+// with a single space and trims the ends. Used when embedding a parsed
+// C/C++ signature inside a `//` comment so that multi-line declarations
+// don't leak past the comment leader.
+func collapseWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func fileExists(p string) bool {
@@ -1273,7 +1418,13 @@ func renderWrapper(shape, fnName, sourceAbs, targetName string,
 	var b strings.Builder
 	b.WriteString("// AUTO-GENERATED by hardwarego/register_synthetic_target.\n")
 	b.WriteString("// Do not edit by hand -- re-register the target instead.\n")
-	b.WriteString("// Wrapper for: " + sig.Raw + "\n")
+	// sig.Raw can be a multi-line declaration (the original source may
+	// have wrapped its parameters across lines). A bare `// Wrapper for:`
+	// + raw signature would only `//`-prefix the first line, leaving the
+	// rest as live C++ that the compiler tries to parse as a redeclaration
+	// of the wrapped function -- and fails before ever reaching the
+	// stdint.h include directive below it. Collapse to one line.
+	b.WriteString("// Wrapper for: " + collapseWhitespace(sig.Raw) + "\n")
 	b.WriteString("// Shape: " + shape + "\n\n")
 	b.WriteString("#include <stddef.h>\n")
 	b.WriteString("#include <stdint.h>\n")
@@ -1288,9 +1439,18 @@ func renderWrapper(shape, fnName, sourceAbs, targetName string,
 				"  return %s(secret, secret_len, out, out_len);\n"+
 				"}\n\n", fnName))
 
+	// NOTE on linkage: we DO NOT redeclare the wrapped function inside
+	// our `extern "C" { ... }` block. The user's source is pulled in via
+	// `#include` ABOVE the extern "C" block, so its declaration keeps
+	// whatever linkage the user wrote (default C++ for .cpp files, C
+	// when they used `extern "C"`). Redeclaring the same function with
+	// C linkage inside our extern "C" block produced
+	//   "conflicting declaration of 'X' with 'C' linkage"
+	//   "previous declaration with 'C++' linkage"
+	// errors at compile time. The wrapper body calls the function by
+	// its source-side declaration, which is sufficient for both C and
+	// C++ targets -- the calling-site doesn't need a duplicate decl.
 	case "bytes_len":
-		b.WriteString(fmt.Sprintf(
-			"%s %s(const uint8_t*, size_t);\n\n", sig.ReturnType, fnName))
 		b.WriteString(fmt.Sprintf(
 			"int gb_target_call(const uint8_t* secret, size_t secret_len,\n"+
 				"                  uint8_t* out, size_t* out_len) {\n"+
@@ -1306,9 +1466,13 @@ func renderWrapper(shape, fnName, sourceAbs, targetName string,
 		if len(ref) == 0 {
 			return "", fmt.Errorf("comparator_len shape requires reference_hex (got empty)")
 		}
-		b.WriteString(fmt.Sprintf(
-			"%s %s(const uint8_t*, const uint8_t*, size_t);\n\n", sig.ReturnType, fnName))
-		b.WriteString("static const uint8_t kReference[] = {")
+		// Wrapper-internal constants get a __gb_ prefix so they can't
+		// redefine same-named symbols in the wrapped source. The whole
+		// source file is `#include`d above (so its translation unit is
+		// merged with the wrapper's), and a user defining their own
+		// `kReference` to compare against -- a very natural thing for
+		// a byte-compare target to do -- would otherwise collide.
+		b.WriteString("static const uint8_t __gb_reference[] = {")
 		for i, by := range ref {
 			if i > 0 {
 				b.WriteString(", ")
@@ -1316,12 +1480,12 @@ func renderWrapper(shape, fnName, sourceAbs, targetName string,
 			b.WriteString(fmt.Sprintf("0x%02x", by))
 		}
 		b.WriteString("};\n")
-		b.WriteString(fmt.Sprintf("static const size_t kReferenceLen = %d;\n\n", len(ref)))
+		b.WriteString(fmt.Sprintf("static const size_t __gb_reference_len = %d;\n\n", len(ref)))
 		b.WriteString(fmt.Sprintf(
 			"int gb_target_call(const uint8_t* secret, size_t secret_len,\n"+
 				"                  uint8_t* out, size_t* out_len) {\n"+
-				"  size_t n = secret_len < kReferenceLen ? secret_len : kReferenceLen;\n"+
-				"  %s rc = %s(secret, kReference, n);\n"+
+				"  size_t n = secret_len < __gb_reference_len ? secret_len : __gb_reference_len;\n"+
+				"  %s rc = %s(secret, __gb_reference, n);\n"+
 				"  if (out && out_len && *out_len > 0) {\n"+
 				"    out[0] = (uint8_t)((int)rc & 0xff);\n"+
 				"    *out_len = 1;\n"+
