@@ -32,6 +32,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -77,6 +78,54 @@ const (
 // whitespace variations.
 var gbTargetCallRegex = regexp.MustCompile(`(?m)^[^/\n]*\bgb_target_call\s*\(`)
 
+// harnessABISignature is the exact function the harness expects to find in
+// each candidate source file. Kept in sync with
+// glassbox/backend/hardware/esp/harness/gb_target.h. Surfaced verbatim to
+// the agent in error responses so it can show users exactly what's missing
+// without us having to update the prompt every time the ABI shifts.
+const harnessABISignature = "int gb_target_call(const uint8_t* secret, size_t secret_len, uint8_t* out, size_t* out_len);"
+
+const harnessABIHeaderPath = "glassbox/backend/hardware/esp/harness/gb_target.h"
+
+// maxSkippedExamples caps how many skipped files we list back to the agent
+// in a no_targets response. Enough for the agent to show the user a useful
+// sample without flooding the LLM context on huge repos.
+const maxSkippedExamples = 10
+
+// syntheticDirName is the subdir under the cloned repo where we drop
+// auto-generated harness wrappers (one .cpp per registered target).
+// Living inside repo_root means scanRepoForTargets picks them up for free
+// AND they get cleaned up when the repo dir is removed.
+const syntheticDirName = "__glassbox_synthetic__"
+
+// maxRepoFileSize bounds how much of a candidate source file we'll read
+// when parsing its function signatures. 1 MiB is generous for any real
+// hand-written .cpp; generated/concatenated files larger than this almost
+// certainly aren't single-purpose.
+const maxRepoFileSize = 1 * 1024 * 1024
+
+// maxReferenceLen bounds the byte length of a comparator-shape reference
+// constant. The harness only accepts inputs <= 64 bytes, so a reference
+// longer than that is unaudible.
+const maxReferenceLen = 64
+
+// fnSigRegexFmt builds a regex that finds a forward decl OR definition of
+// a specific function by name. We deliberately keep this simple: the
+// agent already knows the function name, so we just need to locate one
+// declaration to extract the parameter list. Captures: (1) return-type
+// fragment, (2) parameter list (without parens). Matches things like:
+//
+//   int byte_compare(const uint8_t* a, const uint8_t* b, size_t n)
+//   void  aes_block( const uint8_t key[16], const uint8_t in[16], uint8_t out[16] )
+//   extern "C" int gb_target_call(const uint8_t* s, size_t n, uint8_t* o, size_t* ol)
+//
+// We require a balanced single-line param list -- multi-line decls are
+// rare for the small audit-shaped functions we care about, and demanding
+// single-line keeps the regex tractable.
+const fnSigRegexFmt = `(?m)^\s*(?:extern\s+"C"\s+)?` +
+	`((?:const\s+)?(?:unsigned\s+)?(?:int|bool|void|uint8_t|size_t|char|long))` +
+	`\s*\*?\s*\b%s\b\s*\(\s*([^)]*?)\s*\)\s*[{;]`
+
 // -----------------------------------------------------------------------------
 // Types: request/response payloads
 // -----------------------------------------------------------------------------
@@ -100,6 +149,11 @@ type listTargetsResponse struct {
 	Skipped  []targetInfo `json:"skipped"`
 	Count    int          `json:"count"`
 	Note     string       `json:"note,omitempty"`
+	// HarnessABISignature is included on every response (not just empties)
+	// so the agent always knows what makes a file flashable and can
+	// describe it to the user without us re-prompting.
+	HarnessABISignature string `json:"harness_abi_signature"`
+	HarnessABIHeader    string `json:"harness_abi_header"`
 }
 
 type startAuditRequest struct {
@@ -152,6 +206,52 @@ type auditStatusResponse struct {
 
 type cancelAuditRequest struct {
 	AuditID string `json:"audit_id"`
+}
+
+// registerTargetRequest is the smallest viable spec for "wrap function X
+// in file Y as a flashable harness target". The agent identifies the
+// candidate function and gives us the path -- everything else (signature
+// parsing, template selection, source rendering, file write) happens
+// server-side so the agent's payload stays tiny.
+type registerTargetRequest struct {
+	RepoRoot     string `json:"repo_root"`
+	SourceFile   string `json:"source_file"`             // relative to repo_root
+	FunctionName string `json:"function_name"`           // C identifier
+	ReferenceHex string `json:"reference_hex,omitempty"` // required only for 2-ptr comparator shapes
+	TargetName   string `json:"target_name,omitempty"`   // optional override for the synthetic file's basename
+}
+
+// registerTargetResponse tells the agent what shape was matched and
+// where the synthesized wrapper landed on disk. The path can be passed
+// straight to start_hardware_audit (it sits inside repo_root, so the
+// existing scanner picks it up).
+type registerTargetResponse struct {
+	RepoRoot          string `json:"repo_root"`
+	SourceFile        string `json:"source_file"`
+	FunctionName      string `json:"function_name"`
+	ShapeUsed         string `json:"shape_used"`     // bytes_len | comparator_len | harness_native
+	WrapperPath       string `json:"wrapper_path"`   // absolute
+	WrapperRelPath    string `json:"wrapper_rel_path"` // relative to repo_root
+	ParsedSignature   string `json:"parsed_signature"`
+	HarnessABISigUsed string `json:"harness_abi_signature_used"`
+}
+
+// jsonErrorResponse is the shape we return for actionable failures (notably
+// "no harness-compatible sources" on start_hardware_audit). The MCP-side
+// agent gets a stable schema instead of a single line of plain text:
+//
+//   - Error      : the same human string the old http.Error returned, so
+//                  any caller still grepping for it keeps working.
+//   - ErrorCode  : machine-readable enum the agent can branch on.
+//   - Details    : free-form scan stats / examples / signatures.
+//   - Hint       : remediation guidance the agent can paraphrase to the user.
+//   - NextAction : tool the agent should call next, if any.
+type jsonErrorResponse struct {
+	Error      string         `json:"error"`
+	ErrorCode  string         `json:"error_code,omitempty"`
+	Details    map[string]any `json:"details,omitempty"`
+	Hint       string         `json:"hint,omitempty"`
+	NextAction string         `json:"next_action,omitempty"`
 }
 
 // -----------------------------------------------------------------------------
@@ -340,15 +440,22 @@ func (s *server) handleListTargets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := listTargetsResponse{
-		RepoRoot: repo,
-		Targets:  targets,
-		Skipped:  skipped,
-		Count:    len(targets),
+		RepoRoot:            repo,
+		Targets:             targets,
+		Skipped:             skipped,
+		Count:               len(targets),
+		HarnessABISignature: harnessABISignature,
+		HarnessABIHeader:    harnessABIHeaderPath,
 	}
 	if len(targets) == 0 {
-		resp.Note = "No files defining gb_target_call(...) were found. " +
-			"Source files must implement the harness ABI declared in " +
-			"glassbox/backend/hardware/esp/harness/gb_target.h to be flashable."
+		resp.Note = fmt.Sprintf(
+			"No flashable files in this repo: scanned %d C/C++ source file(s), "+
+				"none defined gb_target_call(...). To be auditable a file must "+
+				"implement the harness ABI: `%s` (declared in %s). "+
+				"Tell the user the repo is not GlassBox-ready -- do NOT call "+
+				"start_hardware_audit; it will return error_code=no_targets.",
+			len(skipped), harnessABISignature, harnessABIHeaderPath,
+		)
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -394,13 +501,50 @@ func (s *server) handleStartAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	targets, _, err := scanRepoForTargets(repo, req.Filter)
+	targets, skipped, err := scanRepoForTargets(repo, req.Filter)
 	if err != nil {
 		http.Error(w, "scan: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	if len(targets) == 0 {
-		http.Error(w, "no harness-compatible source files found in repo_root", http.StatusBadRequest)
+		// Build a structured, agent-actionable 400. The agent should NOT
+		// retry start_hardware_audit on this repo; it should instead
+		// surface the skipped examples + ABI hint to the user (or call
+		// list_hardware_targets if it wants the full list).
+		examples := skipped
+		if len(examples) > maxSkippedExamples {
+			examples = examples[:maxSkippedExamples]
+		}
+		skippedJSON := make([]map[string]string, 0, len(examples))
+		for _, s := range examples {
+			skippedJSON = append(skippedJSON, map[string]string{
+				"rel_path": s.RelPath,
+				"reason":   s.Reason,
+			})
+		}
+		writeJSONError(w, http.StatusBadRequest, jsonErrorResponse{
+			Error:     "no harness-compatible source files found in repo_root",
+			ErrorCode: "no_targets",
+			Details: map[string]any{
+				"repo_root":             repo,
+				"cpp_files_scanned":     len(skipped),
+				"harness_compatible":    0,
+				"skipped_count":         len(skipped),
+				"skipped_examples":      skippedJSON,
+				"filter_applied":        req.Filter,
+				"harness_abi_signature": harnessABISignature,
+				"harness_abi_header":    harnessABIHeaderPath,
+			},
+			Hint: "This repo contains no source files implementing the GlassBox " +
+				"harness ABI. The harness only flashes files that define the " +
+				"function shown in details.harness_abi_signature. Show the user " +
+				"details.skipped_examples and details.harness_abi_signature so " +
+				"they understand what's missing. Do NOT retry start_hardware_audit " +
+				"on this repo -- either ask the user for a different repo or for " +
+				"permission to add a gb_target_call(...) wrapper around an " +
+				"existing function.",
+			NextAction: "list_hardware_targets",
+		})
 		return
 	}
 
@@ -900,6 +1044,15 @@ func dirExists(p string) bool {
 }
 
 func writeJSON(w http.ResponseWriter, code int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+// writeJSONError sends a structured 4xx/5xx response. Use this whenever the
+// agent might want to do something with the failure (recover, ask the user
+// a clarifying question, switch tools) instead of just bubbling a string.
+func writeJSONError(w http.ResponseWriter, code int, payload jsonErrorResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(payload)

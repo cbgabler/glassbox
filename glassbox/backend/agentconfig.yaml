@@ -2,9 +2,9 @@ agents:
   - agent_id: "Anthonys personal helper"
     description: "An assistant to help me with various tasks, including coding, research, and general problem-solving."
     llm:
-      model: claude-opus-4-5-20251101
+      model: gpt-4o-mini
       temperature: 0.7
-      api_key:
+      api_key: 
 
       max_tokens: 3000
     servers:
@@ -13,4 +13,3 @@ agents:
       - "serverconfigs/hardwareconfig.yaml"
     server_generation: false
     infra_generation: false
->>>>>>>>> Temporary merge branch 2
