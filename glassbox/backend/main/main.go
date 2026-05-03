@@ -8,6 +8,7 @@ import (
 
 	"github.com/AnthonyL103/GOMCP/chat"
 	"github.com/AnthonyL103/GOMCP/protocol/parseagentprotocol"
+	"github.com/AnthonyL103/GOMCP/transport"
 	voicechat "github.com/AnthonyL103/GOMCP/voice"
 	"github.com/joho/godotenv"
 )
@@ -46,6 +47,15 @@ func main() {
 	log.Printf("Using provider: %s", provider.GetProviderName())
 
 	hub := newHub()
+
+	// Wire callback after hub exists
+	if ap, ok := provider.(*transport.AnthropicProvider); ok {
+		log.Println("Setting AnthropicProvider OnToolCall callback to broadcast tool calls to WS clients")
+		ap.OnToolCall = func(msg chat.Message) {
+			hub.Broadcast(msg)
+		}
+	}
+
 	srv := &Server{
 		ag:       ag,
 		provider: provider,

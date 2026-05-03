@@ -12,23 +12,47 @@ runtime:
 # Tools provided by this server
 tools:
   - tool_id: "clone_repo"
-    description: "Clone a git URL or copy a local repo into a run workspace"
+    description: |
+      REQUIRED FIRST STEP for any repo audit. Downloads (or copies) the target repo
+      into the local workspace at glassbox/backend/clonedrepos/ so that
+      get_repo_context, get_file_contents, list_hardware_targets, and
+      start_hardware_audit can read it.
+
+      WHEN TO CALL:
+      - The user provides a new git URL or local path. Always call this first.
+      - You suspect the workspace is stale (e.g. a prior get_repo_context returned
+        empty entries). Call this again to refresh.
+
+      Provide exactly one of `git_url` OR `path` (not both). `branch` is optional.
+      The server may report `already_cloned: true` if the workspace is already
+      populated from a prior call -- treat that as success and proceed.
     handler: "clone_repo"
 
     input_schema:
       properties:
         git_url:
           type: "string"
-          description: "Git URL to clone"
+          description: "Git URL to clone (e.g. https://github.com/owner/repo)"
         path:
           type: "string"
-          description: "Local repo path to copy"
+          description: "Local repo path to copy (alternative to git_url; provide one or the other, not both)"
         branch:
           type: "string"
-          description: "Optional branch to clone"
+          description: "Optional branch to clone (defaults to the repo's default branch)"
 
   - tool_id: "get_repo_context"
-    description: "Return repo tree information or read a file from a cloned run"
+    description: |
+      List the repo tree (or read a file) from the workspace populated by clone_repo.
+
+      PRECONDITION: clone_repo must have succeeded for this repo earlier in the
+      conversation. If you skip clone_repo, this tool returns `total_count: 0`
+      with empty entries -- that is NOT an access/permissions issue, it just
+      means nothing has been cloned yet. Call clone_repo and retry.
+
+      Default usage: omit `path` / `file_path` to get the full tree at the repo
+      root. Always pass `max_depth=4` and `max_entries=500` for repo-overview
+      calls. Use `file_path` (with optional `start_line`/`end_line`) to read a
+      single file, or use the dedicated get_file_contents tool.
     handler: "get_repo_context"
 
     input_schema:
