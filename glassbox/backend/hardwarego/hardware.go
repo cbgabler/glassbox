@@ -47,7 +47,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -75,7 +74,7 @@ const (
 	esptoolMissing = "No module named esptool"
 	noPicoDetected = "no Pico detected via USB"
 
-	defaultBridgeSeconds  = 90
+	defaultBridgeSeconds = 90
 	// Per-target hard timeout. With --n 500 we expect ~50s of capture +
 	// ~30s of flash + a few seconds of analyze; 360s leaves slack for
 	// slow Wi-Fi/USB while still aborting truly stuck runs.
@@ -133,9 +132,9 @@ const maxReferenceLen = 64
 // declaration to extract the parameter list. Captures: (1) return-type
 // fragment, (2) parameter list (without parens). Matches things like:
 //
-//   int byte_compare(const uint8_t* a, const uint8_t* b, size_t n)
-//   void  aes_block( const uint8_t key[16], const uint8_t in[16], uint8_t out[16] )
-//   extern "C" int gb_target_call(const uint8_t* s, size_t n, uint8_t* o, size_t* ol)
+//	int byte_compare(const uint8_t* a, const uint8_t* b, size_t n)
+//	void  aes_block( const uint8_t key[16], const uint8_t in[16], uint8_t out[16] )
+//	extern "C" int gb_target_call(const uint8_t* s, size_t n, uint8_t* o, size_t* ol)
 //
 // We require a balanced single-line param list -- multi-line decls are
 // rare for the small audit-shaped functions we care about, and demanding
@@ -278,8 +277,8 @@ type registerTargetResponse struct {
 	RepoRoot          string `json:"repo_root"`
 	SourceFile        string `json:"source_file"`
 	FunctionName      string `json:"function_name"`
-	ShapeUsed         string `json:"shape_used"`     // bytes_len | comparator_len | harness_native
-	WrapperPath       string `json:"wrapper_path"`   // absolute
+	ShapeUsed         string `json:"shape_used"`       // bytes_len | comparator_len | harness_native
+	WrapperPath       string `json:"wrapper_path"`     // absolute
 	WrapperRelPath    string `json:"wrapper_rel_path"` // relative to repo_root
 	ParsedSignature   string `json:"parsed_signature"`
 	HarnessABISigUsed string `json:"harness_abi_signature_used"`
@@ -290,7 +289,7 @@ type registerTargetResponse struct {
 // agent gets a stable schema instead of a single line of plain text:
 //
 //   - Error      : the same human string the old http.Error returned, so
-//                  any caller still grepping for it keeps working.
+//     any caller still grepping for it keeps working.
 //   - ErrorCode  : machine-readable enum the agent can branch on.
 //   - Details    : free-form scan stats / examples / signatures.
 //   - Hint       : remediation guidance the agent can paraphrase to the user.
@@ -314,6 +313,7 @@ type audit struct {
 	repoRoot   string
 	scanTarget string // absolute path to scan_target.py
 	python     string
+	pythonArgs []string
 	bridgeSecs int
 	espPort    string
 	picoPort   string
@@ -583,7 +583,7 @@ func (s *server) handleStartAudit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "gb_target.cpp missing at "+gbTarget, http.StatusInternalServerError)
 		return
 	}
-	py, err := resolvePython(glassboxRoot)
+	py, pyArgs, err := resolvePython(glassboxRoot)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -646,6 +646,7 @@ func (s *server) handleStartAudit(w http.ResponseWriter, r *http.Request) {
 		repoRoot:   repo,
 		scanTarget: scanTarget,
 		python:     py,
+		pythonArgs: pyArgs,
 		bridgeSecs: bridgeSecs,
 		espPort:    req.ESPPort,
 		picoPort:   req.PicoPort,
@@ -672,7 +673,7 @@ func (s *server) handleStartAudit(w http.ResponseWriter, r *http.Request) {
 				"existing_audit_id": existingID,
 				"hint":              "poll get_hardware_audit_status (audit_id omitted) for progress, or cancel_hardware_audit before starting a new one",
 			},
-			Hint: "Do NOT call start_hardware_audit again. Poll get_hardware_audit_status with the existing_audit_id from details, OR call cancel_hardware_audit first if the user explicitly asked you to abort.",
+			Hint:       "Do NOT call start_hardware_audit again. Poll get_hardware_audit_status with the existing_audit_id from details, OR call cancel_hardware_audit first if the user explicitly asked you to abort.",
 			NextAction: "get_hardware_audit_status",
 		})
 		return
@@ -797,14 +798,14 @@ func runAudit(a *audit) {
 // scan_target.py owns gb_target.cpp install/restore itself; we don't
 // pre-copy. The protocol is:
 //
-//   stdout: a single line of JSON (the TargetReport.to_dict() blob)
-//           emitted right at the end. With --out -, no file is written.
-//   stderr: live progress -- "[scan] --- stage: <name> ---" markers
-//           plus per-stage chatter. We mirror the stage name to the
-//           agent via setStep() so the user can see "currently capturing
-//           traces" etc. Any familiar error substring (no Pico, esptool
-//           missing, bridge ack miss) gets sticky-flagged so we can give
-//           the agent a precise reason on failure.
+//	stdout: a single line of JSON (the TargetReport.to_dict() blob)
+//	        emitted right at the end. With --out -, no file is written.
+//	stderr: live progress -- "[scan] --- stage: <name> ---" markers
+//	        plus per-stage chatter. We mirror the stage name to the
+//	        agent via setStep() so the user can see "currently capturing
+//	        traces" etc. Any familiar error substring (no Pico, esptool
+//	        missing, bridge ack miss) gets sticky-flagged so we can give
+//	        the agent a precise reason on failure.
 func runOneTarget(a *audit, idx int, t targetInfo) bool {
 	args := []string{
 		"-u",
@@ -832,11 +833,11 @@ func runOneTarget(a *audit, idx int, t targetInfo) bool {
 		cancel()
 	}()
 
-	cmd := exec.CommandContext(ctx, a.python, args...)
+	fullArgs := append([]string{}, a.pythonArgs...)
+	fullArgs = append(fullArgs, args...)
+	cmd := exec.CommandContext(ctx, a.python, fullArgs...)
 	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
-	if runtime.GOOS != "windows" {
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	}
+	cmd.SysProcAttr = commandSysProcAttr()
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
@@ -1160,18 +1161,35 @@ func resolveGlassboxRoot() (string, error) {
 	return "", fmt.Errorf("could not locate glassbox repo root from cwd=%s", cwd)
 }
 
-func resolvePython(glassboxRoot string) (string, error) {
+func resolvePython(glassboxRoot string) (string, []string, error) {
+	if runtime.GOOS == "windows" {
+		venv := filepath.Join(glassboxRoot, "glassbox", "backend", "hardware", "runner", ".venv", "Scripts", "python.exe")
+		if fileExists(venv) {
+			return venv, nil, nil
+		}
+		if p, err := exec.LookPath("py"); err == nil {
+			return p, []string{"-3"}, nil
+		}
+		if p, err := exec.LookPath("python3"); err == nil {
+			return p, nil, nil
+		}
+		if p, err := exec.LookPath("python"); err == nil {
+			return p, nil, nil
+		}
+		return "", nil, errors.New("no python found (looked for runner/.venv/Scripts/python.exe, py -3, python3, python)")
+	}
+
 	venv := filepath.Join(glassboxRoot, relRunnerVenv)
 	if fileExists(venv) {
-		return venv, nil
+		return venv, nil, nil
 	}
 	if p, err := exec.LookPath("python3"); err == nil {
-		return p, nil
+		return p, nil, nil
 	}
 	if p, err := exec.LookPath("python"); err == nil {
-		return p, nil
+		return p, nil, nil
 	}
-	return "", errors.New("no python found (looked for runner/.venv/bin/python, python3, python)")
+	return "", nil, errors.New("no python found (looked for runner/.venv/bin/python, python3, python)")
 }
 
 // collapseWhitespace replaces every run of whitespace (including newlines)
