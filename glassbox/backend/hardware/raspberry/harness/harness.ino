@@ -67,7 +67,7 @@ static uint16_t  trace[TRACE_LEN];
 // USE_HARDWARE_FET = 1  -- "hardware open-drain" (production-grade, requires
 //     2x 2N7000 N-FET + 2x 10k gate pull-downs + 2x 1k gate series resistors,
 
-#define USE_HARDWARE_FET 1
+#define USE_HARDWARE_FET 0
 
 #if USE_HARDWARE_FET
 static void kill_pin_release(uint8_t pin) {
@@ -124,16 +124,54 @@ static uint32_t g_bridge_deadline = 0;     // millis() value when bridge auto-ex
 static bool     g_bridge_saw_data = false; // becomes true after first forwarded byte
 static uint32_t g_bridge_dtr_low_since = 0; // millis() when DTR last went inactive
 static bool     g_last_dtr        = false;
-static bool     g_last_rts        = false;
+// Phased close-detection state. A normal flash session has TWO host-side
+// port closes:
+//   phase 0: the runner that issued BRIDGE is still holding the port open.
+//   phase 1: the runner closed the port to hand off to arduino-cli/esptool.
+//            We have to be patient here -- arduino-cli's compile step can
+//            keep the port closed for many seconds, especially the first
+//            time. Use a long timeout (60 s) before giving up.
+//   phase 2: esptool has reopened the port and at some point closed it
+//            again (the flash finished). Now we want to exit BRIDGE
+//            promptly so exit_to_run_mode() boots the freshly-flashed
+//            firmware. Use a short timeout (5 s) here.
+static uint8_t  g_bridge_dtr_phase = 0;
 
-static void bridge_apply_lines(bool dtr, bool rts) {
-  // Mirror the host's reset/boot-mode lines onto the ESP32's EN / GPIO0.
-  // dtr=true  -> EN line LOW  (chip held in reset)
-  // rts=true  -> GPIO0 LOW    (sample at next reset edge -> bootloader)
-  if (dtr) kill_pin_assert(PIN_KILL_EN);
-  else     kill_pin_release(PIN_KILL_EN);
-  if (rts) kill_pin_assert(PIN_KILL_BOOT);
-  else     kill_pin_release(PIN_KILL_BOOT);
+// Hands-off bootloader entry: the Pico drives the ESP32's reset sequence
+// itself instead of trying to translate the host's DTR/RTS line state.
+// This is more robust because we don't depend on the host-to-Pico CDC
+// stack reliably propagating line-state changes (some host/OS/driver
+// combinations swallow them), and it means the user only has to wire the
+// EN and GPIO0 kill lines correctly -- they don't have to debug esptool's
+// auto-reset circuit semantics.
+static void enter_rom_bootloader() {
+  // Timing here is calibrated to match esptool's classic_reset sequence,
+  // which is what the ESP32 dev boards we test on are actually validated
+  // against. The ESP32 reference design puts a 10 uF cap on EN to debounce
+  // the reset line, so a too-short EN-low pulse doesn't actually discharge
+  // the cap below the chip's logic-low threshold and the chip never resets.
+  // Empirically: 20 ms was unreliable from a "hot" entry (USB CDC just
+  // finished flushing); 100 ms matches esptool and resets every time.
+  //
+  // Hold IO0 low BEFORE we drop EN -- the bootrom samples GPIO0 the
+  // instant EN is released, so IO0 must already be low at that moment.
+  kill_pin_assert(PIN_KILL_BOOT);     // IO0 -> LOW
+  delay(5);                           // let IO0 settle (overcomes any host-side glitch)
+  kill_pin_assert(PIN_KILL_EN);       // EN  -> LOW (chip in reset)
+  delay(100);                         // hold reset 100ms (esptool default; 20 was marginal)
+  kill_pin_release(PIN_KILL_EN);      // EN released; chip starts in bootloader
+  delay(80);                          // give the bootrom time to lock IO0 in (esptool: 50)
+  kill_pin_release(PIN_KILL_BOOT);    // safe to release IO0; chip is in DL mode
+}
+
+static void exit_to_run_mode() {
+  // After flashing, we want the chip to boot the freshly-uploaded user
+  // firmware. Make sure IO0 is high (run mode) and pulse EN.
+  kill_pin_release(PIN_KILL_BOOT);    // IO0 floats high via internal pull-up
+  delayMicroseconds(500);
+  kill_pin_assert(PIN_KILL_EN);       // EN -> LOW (reset)
+  delay(20);
+  kill_pin_release(PIN_KILL_EN);      // EN released; chip boots in RUN mode
 }
 
 static void bridge_enter(uint32_t seconds) {
@@ -143,39 +181,42 @@ static void bridge_enter(uint32_t seconds) {
   g_bridge_deadline = millis() + seconds * 1000UL;
   g_bridge_saw_data = false;
   g_bridge_dtr_low_since = 0;
-  // Synchronise with whatever line state the host is already presenting.
+  g_bridge_dtr_phase = 0;
   g_last_dtr = Serial.dtr();
-  g_last_rts = Serial.rts();
-  bridge_apply_lines(g_last_dtr, g_last_rts);
+  enter_rom_bootloader();
 }
 
 static void bridge_exit(const char* reason) {
   g_in_bridge = false;
-  // Park kill lines in high-Z again -- ESP32's own pull-ups bring it back
-  // up cleanly, and we're ready to handle harness commands once more.
-  kill_pin_release(PIN_KILL_EN);
-  kill_pin_release(PIN_KILL_BOOT);
+  exit_to_run_mode();
   Serial.printf("ACK bridge_exit %s\n", reason);
+  Serial.println("READY harness v2 quarantine-capable");
 }
 
 // Run one slice of the bridge loop. Called from loop() instead of the
-// normal command parser whenever g_in_bridge is true.
+// normal command parser whenever g_in_bridge is true. We do NOT handle
+// DTR/RTS in here -- bridge_enter() already put the ESP32 into ROM
+// bootloader, and esptool's reset toggles are deliberately ignored. Our
+// only job here is to (a) forward bytes both directions, (b) track DTR
+// for the "host closed the port -> upload finished" exit condition, and
+// (c) enforce the deadline.
 static void bridge_tick() {
-  // 1. Translate any DTR/RTS edge into kill-line GPIO transitions.
   bool dtr = Serial.dtr();
-  bool rts = Serial.rts();
-  if (dtr != g_last_dtr || rts != g_last_rts) {
-    bridge_apply_lines(dtr, rts);
+  if (dtr != g_last_dtr) {
     g_last_dtr = dtr;
-    g_last_rts = rts;
     if (!dtr) {
       if (g_bridge_dtr_low_since == 0) g_bridge_dtr_low_since = millis();
+      // Going from "any host has the port open" to "no host". Phase 0 -> 1.
+      if (g_bridge_dtr_phase == 0) g_bridge_dtr_phase = 1;
     } else {
       g_bridge_dtr_low_since = 0;
+      // A second client (arduino-cli's esptool) has now opened the port.
+      // From here on, "DTR drops again" is the meaningful close signal.
+      if (g_bridge_dtr_phase == 1) g_bridge_dtr_phase = 2;
     }
   }
 
-  // 2. USB CDC -> UART0  (host bytes onto the wire to the ESP32 bootloader)
+  // USB CDC -> UART0  (host bytes onto the wire to the ESP32 bootloader)
   while (Serial.available()) {
     int c = Serial.read();
     if (c < 0) break;
@@ -183,7 +224,7 @@ static void bridge_tick() {
     g_bridge_saw_data = true;
   }
 
-  // 3. UART0 -> USB CDC  (ESP32 bootloader replies back to the host)
+  // UART0 -> USB CDC  (ESP32 bootloader replies back to the host)
   while (Serial1.available()) {
     int c = Serial1.read();
     if (c < 0) break;
@@ -191,18 +232,36 @@ static void bridge_tick() {
     g_bridge_saw_data = true;
   }
 
-  // 4. Exit conditions.
+  // Exit conditions.
   uint32_t now = millis();
   if ((int32_t)(now - g_bridge_deadline) >= 0) {
     bridge_exit("timeout");
     return;
   }
-  // Host closed the port AFTER the upload made any actual progress: DTR has
-  // been inactive for >300 ms and we saw real bytes pass through. Don't
-  // bail just because the host hasn't asserted DTR yet -- arduino-cli has a
-  // small open-then-pause-then-toggle window at the start.
+  // Host closed the port AFTER the upload made any actual progress.
+  //
+  // A single flash session involves at least two host-side closes:
+  //   (1) The python runner that issued BRIDGE closes its diagnostic open
+  //       after seeing "ACK bridge" so it can hand control to arduino-cli.
+  //       DTR drops -- phase 0 -> 1.
+  //   (2) arduino-cli compiles (port stays closed in phase 1 the whole
+  //       time), then esptool reopens the port -- DTR rises, phase 1 -> 2.
+  //   (3) esptool runs its reset/sync/flash sequence and closes the port.
+  //       DTR drops -- still in phase 2, this is the "we're done" signal.
+  //
+  // The gap between (1) and (2) is unbounded: a cached compile+esptool
+  // launch is ~3-10 s, but a cold first-time compile can take 30-90 s. So
+  // in phase 1 we have to be patient and use a long timeout (60 s, up
+  // from 30 s -- 30 s was killing the bridge mid-compile on cold runs).
+  // In phase 2 we know esptool has been driving the chip; once esptool
+  // closes the port we want to release the bridge as fast as possible so
+  // exit_to_run_mode() can boot the freshly-flashed firmware. 5 s is more
+  // than esptool's longest momentary DTR drop (its reset dance toggles
+  // DTR for ~100 ms at a time) but short enough that the chip boots
+  // promptly after upload completes.
+  uint32_t close_timeout = (g_bridge_dtr_phase >= 2) ? 5000UL : 60000UL;
   if (g_bridge_saw_data && !dtr && g_bridge_dtr_low_since > 0
-      && (now - g_bridge_dtr_low_since) > 300) {
+      && (now - g_bridge_dtr_low_since) > close_timeout) {
     bridge_exit("host_closed");
     return;
   }
@@ -361,9 +420,15 @@ void loop() {
       long parsed = cmd.substring(sp + 1).toInt();
       if (parsed > 0) seconds = (uint32_t)parsed;
     }
+    // Reset the ESP32 into download mode FIRST, before we ACK. Otherwise
+    // the host (auto_flash.py) will read "ACK bridge", close the port,
+    // hand off to arduino-cli, and esptool can be syncing into a dead
+    // window while the Pico is still pulling EN low. Doing the reset up
+    // front means by the time the host reads the ACK, the chip is already
+    // sitting in the ROM bootloader waiting for a sync packet.
+    bridge_enter(seconds);
     Serial.printf("ACK bridge %lu\n", (unsigned long)seconds);
     Serial.flush();
-    bridge_enter(seconds);
     return;
   }
 
