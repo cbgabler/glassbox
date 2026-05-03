@@ -150,10 +150,15 @@ export function ChatPanel({
     const parsed = parseAgentResponse(lastMessage)
     console.log("[ChatPanel] Parsed streamed message:", parsed)
     
-    // Add message if it has content, tags, or tool calls/results
+    // Only surface tool messages while the audit is actively generating/analyzing.
     const hasContent = lastMessage.content && lastMessage.content.trim().length > 0
     const hasParsedBlocks = parsed.repo.length > 0 || parsed.code.length > 0 || parsed.chat.length > 0
     const hasToolInfo = lastMessage.tool_call || lastMessage.tool_result || parsed.toolCall || parsed.toolResult
+
+    if (hasToolInfo && !isGenerating) {
+      console.log("[ChatPanel] Skipping streamed tool message because generation is inactive")
+      return
+    }
     
     if (hasContent || hasParsedBlocks || hasToolInfo) {
       setMessages(prev => [...prev, {
@@ -165,7 +170,7 @@ export function ChatPanel({
       }])
       console.log("[ChatPanel] Added streamed message to chat")
     }
-  }, [streamedMessages])
+  }, [streamedMessages, isGenerating])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
