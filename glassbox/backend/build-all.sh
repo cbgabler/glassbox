@@ -26,7 +26,8 @@ while IFS= read -r pkg; do
   # Mirror the .ps1's behaviour: a package literally named `main` also gets
   # copied to ./main.exe at the backend root.
   if [ "$pkg_name" = "main" ]; then
-    cp -f "$out" "$script_dir/main.exe"
+    rm -f "$script_dir/main.exe"
+    cp "$out" "$script_dir/main.exe"
     echo "Copied $out -> $script_dir/main.exe"
   fi
 done < <(go list ./...)

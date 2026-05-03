@@ -1,10 +1,12 @@
 # Hardware MCP Server Configuration
 #
-# Exposes the GlassBox hardware audit pipeline (auto_flash + verify, sweep
-# over every harness-compatible source file in a cloned repo) as MCP tools
-# the agent can call.
+# Exposes the GlassBox per-target hardware scan pipeline (scan_target.py:
+# install -> ct_lint -> flash -> collect (TVLA campaign) -> tvla -> cpa)
+# as MCP tools the agent can call. Each harness-compatible source file in
+# a cloned repo is run through the full pipeline and produces a structured
+# TargetReport with findings, verdict, and per-stage timings.
 server_id: "hardware_server"
-description: "Runs the GlassBox ESP32/Pico flash+verify audit against a cloned repo and reports per-file results."
+description: "Runs the GlassBox ESP32 TVLA + CPA scan against a cloned repo and reports per-target findings."
 
 # Runtime configuration (relative path -> works on macOS/Linux/Windows
 # when the runner uses ParseAgentConfig's repo-root resolution).
@@ -169,21 +171,63 @@ tools:
 
   - tool_id: "start_hardware_audit"
     description: |
-      Kick off a background hardware audit: for every harness-compatible
+      Kick off a background TVLA + CPA scan over every harness-compatible
       source file in repo_root (NATIVE files defining gb_target_call,
       PLUS any wrappers you previously registered via
-      register_synthetic_target), copy it into the ESP32 harness's
-      gb_target.cpp slot, flash via the Pico bridge, and verify the
-      harness boots. Returns immediately with an audit_id; poll
-      get_hardware_audit_status for progress. Only one audit can run at a
-      time (hardware is shared). The synthetic wrapper directory is
+      register_synthetic_target). For each target the server runs the
+      full per-target pipeline (scan_target.py):
+
+        1. install   copy source into the ESP32 harness slot
+        2. ct_lint   static side-channel linter (ms-scale, no hw needed)
+        3. flash     compile + upload via Pico bridge, verify boot
+        4. collect   sweep ~500 traces with the auto-picked TVLA campaign
+                     ('match_vs_random' for byte-compare shapes,
+                     'random_vs_zero' otherwise)
+        5. tvla      Welch's t-test on cycles + power channels (1st + 2nd
+                     order; threshold |t|=4.5)
+        6. cpa       correlation power analysis on the random group
+                     (Hamming-weight on AES S-box; gives a per-byte rank)
+
+      Returns immediately with an audit_id; poll get_hardware_audit_status
+      for progress AND for the final findings. Only one audit can run at
+      a time (hardware is shared). The synthetic wrapper directory is
       cleaned up automatically when the audit ends.
+
+      CALL DISCIPLINE -- the agent ABSOLUTELY MUST follow this:
+        - Call this AT MOST ONCE per turn. Never retry; never call again
+          if you already got an audit_id back. If you mistakenly call it
+          a second time and an audit is already running, you'll get HTTP
+          409 error_code=audit_in_progress (see below) -- treat that as
+          confirmation that your first call already succeeded and switch
+          to get_hardware_audit_status with details.existing_audit_id.
+        - The audit takes ~3-6 minutes. Do NOT loop polling within the
+          same turn -- one optional confirmation poll is fine, then stop
+          and tell the user to ping back. The status endpoint is the
+          only correct way to surface progress.
 
       PRECONDITIONS:
         1. You must have called list_hardware_targets at least once.
         2. If that returned count == 0, you must register at least one
            synthetic target via register_synthetic_target BEFORE calling
            this -- otherwise this returns HTTP 400 error_code=no_targets.
+
+      The audit_in_progress error response shape (HTTP 409):
+
+          {
+            "error":      "another audit is already running on the shared hardware",
+            "error_code": "audit_in_progress",
+            "details": {
+              "existing_audit_id": "audit-...",
+              "hint":              "..."
+            },
+            "hint":        "...",
+            "next_action": "get_hardware_audit_status"
+          }
+
+      When you see error_code=audit_in_progress: poll
+      get_hardware_audit_status (with audit_id omitted, OR with
+      details.existing_audit_id) and report progress to the user. Do
+      NOT call start_hardware_audit again.
 
       The no_targets error response shape:
 
@@ -235,10 +279,82 @@ tools:
 
   - tool_id: "get_hardware_audit_status"
     description: |
-      Return the current state of the most recent (or specified) audit:
-      overall state (running|done|cancelled|failed), per-target results,
-      progress counters, and the current step (compile/esptool/booting/
-      verifying). Safe to call repeatedly.
+      Return the current state of the most recent (or specified) audit.
+      Safe to call repeatedly. The agent uses this both for progress
+      ("audit still running, currently capturing traces on
+      byte_compare.cpp") and for the final findings rollup.
+
+      Response shape:
+
+          {
+            "audit_id":      "...",
+            "repo_root":     "...",
+            "state":         "running|done|cancelled|failed",
+            "started_at":    "RFC3339",
+            "finished_at":   "RFC3339"             // present only when state != running
+            "elapsed_secs":  <float>,
+            "total":         <int>,                // # of targets queued
+            "completed":     <int>,                // pass + fail
+            "passed":        <int>,                // verdict == "safe"
+            "failed":        <int>,                // crashes, leaks, key recovery, etc.
+            "current_index": <int>,                // 1-based; 0 if not yet started
+            "current_target":"<basename>",
+            "current_step":  "install|ct_lint|flash|collect|analyze|...",
+            "summary":       "X passed, Y failed (of Z targets)",
+            "results": [
+              {
+                "name":          "<basename>",
+                "path":          "<absolute>",
+                "state":         "queued|install|ct_lint|flash|collect|analyze|pass|fail|skipped|cancelled",
+                "pass":          <bool>,           // verdict == "safe"
+                "reason":        "verdict=... worst=... findings=N"
+                                                   // OR an env-error string if scan_target never emitted JSON
+                "duration_secs": <float>,
+                // ---- TargetReport fields (mirrors scan_target.py) ----
+                "verdict":        "safe|leak_detected|crash_detected|key_recovered|memory_corruption_detected|static_warning",
+                "worst_severity": "CRITICAL|HIGH|MEDIUM|LOW|INFO|pass",
+                "findings":       [ Finding, ... ],   // see below
+                "findings_summary": {
+                  "total":       <int>,
+                  "by_severity": {"CRITICAL": n, "HIGH": n, ...},
+                  "by_type":     {"tvla": n, "crash": n, "static": n, "cpa_key_recovery": n, ...},
+                  "worst_severity": "..."
+                },
+                "n_traces":   <int>,                  // traces that survived collect
+                "stage_secs": {"install": ..., "ct_lint": ..., "flash": ..., "collect": ..., "analyze": ...}
+              },
+              ...
+            ]
+          }
+
+      Each `Finding` has:
+
+          {
+            "id":       "f_001",
+            "type":     "tvla|crash|static|cpa_key_recovery|memory_corruption|...",
+            "severity": "CRITICAL|HIGH|MEDIUM|LOW|INFO|pass",
+            "title":    "<one-line headline>",
+            "detail":   "<paragraph explaining what we measured>",
+            "data":     { ...type-specific fields, e.g. tvla: channel/order/t_abs/threshold, cpa: per_byte... },
+            "remediation": "<optional fix guidance>",
+            "source":   { "file": "...", "line": N, "col": N }   // ct_lint findings only
+          }
+
+      AGENT GUIDANCE:
+        * When state == "done", produce ONE <<code>> block per
+          non-`pass` finding in `results[*].findings`. Use the finding's
+          `title`, `severity`, `detail`, and `remediation` directly --
+          do NOT re-derive findings from the source. The whole point of
+          running on hardware is that the report is empirical.
+        * Quote `t_abs` and `threshold` in TVLA findings ("Welch's |t|=NN
+          > 4.5 on the cycles channel") so the user knows the result is
+          measured, not predicted.
+        * `verdict == "safe"` AND `worst_severity == "pass"` means the
+          target genuinely had no measurable side-channel; report it as
+          a confirmed pass, not as an absence of evidence.
+        * `verdict == "static_warning"` with all-pass TVLA usually means
+          the campaign couldn't excite the leak ct_lint flagged -- the
+          report includes a CT_AUTO finding with a recommended rerun.
     handler: "get_hardware_audit_status"
     input_schema:
       properties:
@@ -248,9 +364,11 @@ tools:
 
   - tool_id: "cancel_hardware_audit"
     description: |
-      Cancel a running audit: kills the in-flight auto_flash subprocess
-      and marks remaining targets as cancelled. The harness gb_target.cpp
-      is restored to its pre-audit state.
+      Cancel a running audit: kills the in-flight scan_target.py
+      subprocess and marks remaining targets as cancelled. scan_target.py
+      restores the harness gb_target.cpp from its own scanbak file as
+      part of its finally clause, so cancellation is safe to call
+      mid-flash and mid-collect.
     handler: "cancel_hardware_audit"
     input_schema:
       properties:
