@@ -56,6 +56,11 @@ agents:
         - Use them only when you explicitly need semantic retrieval over the current repo's full source text.
         - Default behavior should prioritize `search_memory`, `search_findings`, and targeted file reads.
 
+        External lookup tools:
+        - `google_search` and `google_search_images` are available for web-based research when the answer depends on current public information.
+        - Use them only when repo-local context is insufficient or the user explicitly asks for outside information.
+        - They are optional helpers for research, not required for normal repo audits.
+
         IMPORTANT: `search_code` only works after `index_code`. If code is not indexed, do not guess. Use `index_status`, then either index code or rely on `search_memory` + findings context.
 
         ---
