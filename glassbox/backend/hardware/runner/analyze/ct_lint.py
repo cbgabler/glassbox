@@ -41,7 +41,7 @@ import dataclasses
 import os
 import re
 import sys
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Set, Tuple
 
 from pipeline import findings as fmod
 
@@ -447,6 +447,57 @@ _COMPARATOR_RULE_IDS = {"CT001", "CT002"}
 
 
 # =============================================================================
+# Quote-form `#include "..."` following
+#
+# Generated wrappers (notably hardwarego/register_synthetic_target's
+# comparator_len shape) `#include "/abs/path/to/original.cpp"` so the
+# wrapper file itself contains only glue and metadata, not the leaky loop.
+# Without following the include, ct_lint sees no comparator pattern in
+# the file it was handed -- CT001/CT002 stay silent, no
+# `suggested_campaign='match_vs_random'` is emitted, and scan_target.py's
+# auto picker falls back to `random_vs_zero`, which is structurally
+# blind to early-exit comparator leaks. The end-to-end effect is a
+# false negative: a textbook leaky strcmp-shape gets reported as safe.
+#
+# We follow only `"..."` (quote-form) includes -- `<...>` are system
+# headers we don't lint. Cycle-safe via a `_seen` set in lint_file.
+# =============================================================================
+
+_INCLUDE_RE = re.compile(r'^[ \t]*#[ \t]*include[ \t]*"([^"]+)"', re.MULTILINE)
+
+_LINTABLE_INCLUDE_EXTS = frozenset({
+    ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inc", ".ino",
+})
+
+
+def _resolve_local_includes(path: str, src: str) -> List[str]:
+    """Return absolute paths of `#include "..."` targets that resolve to a
+    real, lintable source file. Paths are tried both verbatim (absolute) and
+    relative to the including file's directory. `<...>` system includes are
+    skipped. Order is preserved (file order in `src`); duplicates removed.
+    """
+    base_dir = os.path.dirname(os.path.abspath(path))
+    seen: Set[str] = set()
+    out: List[str] = []
+    for m in _INCLUDE_RE.finditer(src):
+        inc = m.group(1).strip()
+        if not inc:
+            continue
+        cand = inc if os.path.isabs(inc) else os.path.join(base_dir, inc)
+        cand = os.path.normpath(cand)
+        if cand in seen:
+            continue
+        if not os.path.isfile(cand):
+            continue
+        ext = os.path.splitext(cand)[1].lower()
+        if ext not in _LINTABLE_INCLUDE_EXTS:
+            continue
+        seen.add(cand)
+        out.append(cand)
+    return out
+
+
+# =============================================================================
 # Public API
 # =============================================================================
 
@@ -489,29 +540,48 @@ def lint_source(src: str, file: str = "<source>") -> List[LintHit]:
     return out
 
 
-def lint_file(path: str, id_offset: int = 0) -> List[fmod.Finding]:
-    """Lint a file and return Finding objects (ready for run_detail.json)."""
+def lint_file(path: str, id_offset: int = 0,
+              _seen: Optional[Set[str]] = None) -> List[fmod.Finding]:
+    """Lint a file and return Finding objects (ready for run_detail.json).
+
+    Quote-form `#include "..."` directives that resolve to a real source
+    file are followed and linted as well, so generated wrappers stay
+    transparent to the rule set. `_seen` makes the recursion cycle-safe
+    (a file lints itself once per call regardless of include geometry).
+    """
+    abs_path = os.path.abspath(path)
+    if _seen is None:
+        _seen = set()
+    if abs_path in _seen:
+        return []
+    _seen.add(abs_path)
+
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
             src = f.read()
     except OSError as e:
         # Don't blow up the whole pipeline if one source is unreadable.
         # Caller (scan_target.py) treats an empty list as "lint clean".
-        sys.stderr.write(f"[ct_lint] WARN: cannot read {path}: {e}\n")
+        sys.stderr.write(f"[ct_lint] WARN: cannot read {abs_path}: {e}\n")
         return []
-    hits = lint_source(src, path)
+
     out: List[fmod.Finding] = []
-    for i, h in enumerate(hits):
-        fid = f"f_{id_offset + i + 1:03d}"
+    for h in lint_source(src, abs_path):
+        fid = f"f_{id_offset + len(out) + 1:03d}"
         out.append(fmod.build_static_finding(
             fid,
             rule_id=h.rule_id, severity=h.severity,
-            file=path, line=h.line, col=h.col,
+            file=abs_path, line=h.line, col=h.col,
             message=h.message, excerpt=h.excerpt,
             remediation=h.remediation,
             suggested_campaign=h.suggested_campaign,
             suggested_reference_hex=h.suggested_reference_hex,
         ))
+
+    for inc_path in _resolve_local_includes(abs_path, src):
+        out.extend(lint_file(inc_path,
+                             id_offset=id_offset + len(out),
+                             _seen=_seen))
     return out
 
 

@@ -498,6 +498,15 @@ _TYPE_TIEBREAK = {
 }
 
 
+# Severities that should NOT drive a non-safe headline verdict. "pass"
+# explicitly says no signal; "INFO" means the analysis ran but had nothing
+# actionable to report (e.g., CPA attempted key recovery and ranked no byte
+# as #1). Either way the operator-facing verdict should be "safe" -- this
+# matches hardwarego.go's audit-level rule: "pass means verdict is `safe`
+# (no findings worse than INFO/pass); anything else is a fail."
+_NON_VERDICT_SEVERITIES = frozenset({"pass", "INFO"})
+
+
 def derive_verdict(findings: List[Finding]) -> str:
     """Pick the headline verdict from the worst finding's type.
 
@@ -505,10 +514,16 @@ def derive_verdict(findings: List[Finding]) -> str:
     when two findings tie at the same severity we prefer measurement-based
     types over the static lint so the headline reflects the strongest
     evidence we have.
+
+    Findings at `pass` or `INFO` severity are informational and never drive
+    the headline. Without this guard a CPA run that recovered zero bytes
+    (severity INFO, type cpa_key_recovery) would map through TYPE_TO_VERDICT
+    to the alarming "key_recovered" verdict, even though the finding's own
+    text says nothing was recovered.
     """
-    if not findings or all(f.severity == "pass" for f in findings):
+    bad = [f for f in findings if f.severity not in _NON_VERDICT_SEVERITIES]
+    if not bad:
         return "safe"
-    bad = [f for f in findings if f.severity != "pass"]
     bad.sort(key=lambda f: (severity_rank(f.severity),
                             _TYPE_TIEBREAK.get(f.type, 99)))
     return TYPE_TO_VERDICT.get(bad[0].type, "leak_detected")
