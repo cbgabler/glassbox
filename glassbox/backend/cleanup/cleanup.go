@@ -3,17 +3,35 @@ package cleanup
 import (
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
-// resolveRunsDir returns the directory where run workspaces are stored.
-// It mirrors the resolution used elsewhere: honor GLASSBOX_RUNS_DIR or
-// default to ~/.glassbox/runs.
+// resolveRunsDir returns the directory where cloned repos live. Resolution order
+// must stay in sync with repocontextserver.resolveRunsDir so cleanup actually
+// targets the same workspace that clone_repo writes to.
+//
+//  1. CLONEDREPOS_DIR env var (operator override)
+//  2. <git_toplevel>/glassbox/backend/clonedrepos (works on any checkout)
+//  3. <cwd>/clonedrepos (last resort, e.g. binary launched outside a git tree)
 func resolveRunsDir() (string, error) {
-	// Use a simple fixed directory for cloned repos to keep behavior deterministic
-	// and avoid using per-user home locations.
-	fixed := `C:\Users\antho\glassbox2\glassbox2\glassbox\backend\clonedrepos`
-	return filepath.Clean(fixed), nil
+	if v := strings.TrimSpace(os.Getenv("CLONEDREPOS_DIR")); v != "" {
+		abs, err := filepath.Abs(v)
+		if err == nil {
+			return filepath.Clean(abs), nil
+		}
+	}
+	if out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil {
+		if root := strings.TrimSpace(string(out)); root != "" {
+			return filepath.Clean(filepath.Join(root, "glassbox", "backend", "clonedrepos")), nil
+		}
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(filepath.Join(cwd, "clonedrepos")), nil
 }
 
 // RemoveAllRuns removes all saved run workspaces. It attempts to delete the

@@ -411,6 +411,7 @@ func main() {
 	mux.HandleFunc("/execute/start_hardware_audit", srv.handleStartAudit)
 	mux.HandleFunc("/execute/get_hardware_audit_status", srv.handleStatus)
 	mux.HandleFunc("/execute/cancel_hardware_audit", srv.handleCancel)
+	mux.HandleFunc("/execute/register_synthetic_target", srv.handleRegisterTarget)
 
 	log.Printf("Starting Hardware MCP server on port %s\n", listenPort)
 	log.Fatal(http.ListenAndServe(listenPort, mux))
