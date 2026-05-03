@@ -66,6 +66,44 @@ Everything above feeds into the same polymorphic `findings[]` array in
 verdict (`leak_detected | memory_corruption_detected | crash_detected |
 non_determinism_detected | static_warning | key_recovered | safe`).
 
+### v3 additions — "any file the hardware can run"
+
+The hardware harness expects a `gb_target.cpp` exposing two C-ABI symbols
+(`gb_target_call`, `gb_target_name`). The v3 work generalizes that slot so
+every compiled language the ESP32 can execute is supported through one CLI:
+
+```bash
+python glassbox/runner/glassbox_check.py path/to/myfunc.cpp                     # lint only
+python glassbox/runner/glassbox_check.py path/to/myfunc.cpp --install-target    # drop into harness
+python glassbox/runner/glassbox_check.py path/to/myfunc.rs --install-target --name my_target
+```
+
+Files that don't run on the ESP32 (`.py`, `.js`, `.go`, ...) are
+intentionally rejected with a clear message. Static analysis of those
+languages lives in a separate, host-side tool — keeping this command
+honest about what it does: "if it ran on the hardware, here is what
+GlassBox saw."
+
+| Extension                                     | How it reaches the ESP32                                                                                          |
+|---|---|
+| `.c` / `.cpp` / `.h` / `.hpp` / `.cc` / `.ino`| Direct drop-in to `esp/harness/gb_target.cpp` (Arduino IDE flash works as-is).                                    |
+| `.s` / `.S`                                   | Asm copied next to the harness; an auto-generated C++ shim forwards `gb_target_call` to the asm export.            |
+| `.rs`                                         | `compile_target.py` scaffolds a Cargo staticlib (`xtensa-esp32-none-elf`) and a C++ shim; the user runs `cargo +esp build` and links the resulting `.a` via PlatformIO. |
+| `.zig`                                        | Scaffolds a `build.zig` staticlib + matching C++ shim; user runs `zig build` and links via PlatformIO.             |
+
+11. **Cross-language drop-in flow (`compile_target.py`).** Validates the
+    `gb_target_call` / `gb_target_name` ABI for C/C++, copies the source
+    into the harness slot, and generates the C++ forwarding shim plus
+    Cargo / `build.zig` scaffolding for Rust / Zig / asm. When the
+    toolchain isn't available, GlassBox prints the exact commands needed
+    instead of silently failing.
+12. **Single-command unified entry point (`glassbox check`).** One CLI
+    accepts a hardware-runnable source file, runs the pre-flash linter,
+    optionally drops the file into the harness, and writes a v2
+    `run_detail.json` the dashboard already knows how to render. Exit
+    code is non-zero if any HIGH/CRITICAL finding fires, so it drops
+    straight into a CI step.
+
 ---
 
 ## 2. One-sentence inventory of every file
@@ -124,6 +162,8 @@ non_determinism_detected | static_warning | key_recovered | safe`).
 | `cpa.py` | (v2) Vectorized AES first-round S-box CPA with Hamming-weight model; recovers a 16-byte AES key from existing power traces. |
 | `ct_lint.py` | (v2) Pre-flash constant-time linter: 6 regex rules + light taint propagation over `gb_target.cpp`. |
 | `findings.py` | (v2) Polymorphic finding dataclass + builders + severity ladder + verdict derivation, shared by every detector. |
+| `compile_target.py` | (v3) Cross-language drop-in for the harness: validates the `gb_target_call` ABI for C/C++, generates FFI shims + Cargo / build.zig scaffolding for Rust / Zig / asm targets. |
+| `glassbox_check.py` | (v3) The unified `glassbox check <path>` CLI for hardware-runnable source files: ABI check + pre-flash linter + optional `--install-target` drop into `gb_target.cpp`. |
 | `features.py` | Feature extraction from `(cycles, power)` traces for the ML classifier. |
 | `classifier.py` | Sklearn RandomForest training pipeline used to produce `baseline.joblib`. |
 | `synth.py` | Synthetic trace generator used to bootstrap classifier training before real traces existed. |
@@ -203,6 +243,7 @@ glassbox/
 │   │   ├── eval.py                    ← eval.py (top-level CLI)
 │   │   ├── cpa.py
 │   │   ├── ct_lint.py
+│   │   ├── compile_target.py          ← (v3) cross-language drop-in
 │   │   └── anomaly.py                 ← anomaly_detector.py
 │   │
 │   ├── ml/                            (sklearn classifier + features)
@@ -218,6 +259,7 @@ glassbox/
 │   │   ├── findings.py
 │   │   ├── orchestrator.py
 │   │   ├── live_attacker.py
+│   │   ├── glassbox_check.py          ← (v3) unified `glassbox check` CLI
 │   │   └── repo_audit.py
 │   │
 │   ├── targets/                       (unchanged: drop-in gb_target.cpp examples)

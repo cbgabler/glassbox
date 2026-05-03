@@ -1,11 +1,26 @@
 // ESP32 victim harness for GlassBox.
 //
-// Protocol over UART2 (Pico <-> ESP32):
+// Protocol over UART0 (Pico <-> ESP32, GPIO1/3):
 //   Pico  -> ESP32:  "RUN <fn_id> <hex_input>\n"
 //   ESP32 -> Pico:   "RES2 <cycles> <micros> <insns> <branches> <hex_output>\n"
 //                    "ERR  <reason>\n"                    (bad command / hex)
 //                    "MEMVIOL <kind> overrun=<n>\n"        (v2 memory-safety guard tripped)
 //                    "PANIC <pc> <reason>\n"               (v2 shutdown handler best-effort)
+//
+// IMPORTANT (v3 -- single-USB flashing via the Pico):
+//   The protocol now runs on UART0 (the same UART the ROM bootloader uses) so
+//   the Pico can FLASH this firmware over the existing wires when only its
+//   own USB cable is plugged in. The Pico harness exposes a "BRIDGE" mode
+//   that transparently forwards bytes between its USB CDC and UART0, plus
+//   drives EN / GPIO0 from the host's DTR / RTS line state -- exactly what
+//   esptool expects from a CP2102-style USB-to-serial chip.
+//
+//   Consequence: GPIO1/3 are also tapped by the dev-board's onboard USB-to-
+//   serial chip. DO NOT plug the ESP32's own USB cable in WHILE the Pico is
+//   driving the same UART -- they will fight on the TX line. Use one OR the
+//   other:
+//     Pico USB connected   -> GlassBox harness + flash (this file)
+//     ESP32 USB connected  -> direct serial-monitor debug, no Pico
 //
 // The RES2 protocol replaces the older RES line and ships four timing/HPC
 // channels per call instead of one:
@@ -21,18 +36,26 @@
 // Trigger pin GPIO5 is driven HIGH for the duration of the function under test
 // so the Pico can sample the INA169 ADC over exactly that window.
 //
-// Wiring (per glassbox/README.md, with trigger direction reversed for sampling):
-//   ESP32 GPIO16 (RX2) <- Pico GP0 (TX)
-//   ESP32 GPIO17 (TX2) -> Pico GP1 (RX)
-//   ESP32 GPIO5        -> Pico GP2  (trigger OUTPUT, ESP32 drives)
-//   ESP32 GND          <-> Pico GND
+// Wiring (v3 -- updated for Route A):
+//   ESP32 GPIO3  (U0RXD)  <- Pico GP0 (TX)        ◀── moved from GPIO16
+//   ESP32 GPIO1  (U0TXD)  -> Pico GP1 (RX)        ◀── moved from GPIO17
+//   ESP32 GPIO5           -> Pico GP2  (trigger OUTPUT, ESP32 drives)
+//   ESP32 EN              <- Pico GP3  (kill / reset for esptool)
+//   ESP32 GPIO0           <- Pico GP4  (kill / boot-mode for esptool)
+//   ESP32 GND             <-> Pico GND  (REQUIRED)
+//
+// Verbose debug prints (the "[esp32] ..." lines) are gated behind GB_DEBUG
+// so they don't pollute the protocol stream. Set to 1 only when wiring up
+// a fresh board with the ESP32 USB cable; production builds leave it off.
+
+#define GB_DEBUG 0
 
 #include <Arduino.h>
 #include <Preferences.h>
 #include <esp_debug_helpers.h>
 #include "gb_target.h"
 
-static const int PIN_TRIGGER_OUT=5;
+static const int PIN_TRIGGER_OUT = 5;
 
 // =============================================================================
 // v2 memory-safety guards
@@ -55,8 +78,8 @@ static const int PIN_TRIGGER_OUT=5;
 //      a subset (overflows that hit the local frame) without any flags.
 //
 //   3. Panic handler: when ANY of the guards trip, we emit "MEMVIOL ..."
-//      over Serial2 instead of the usual RES2 line. The Pico's runner
-//      classifies that as a memory_corruption finding.
+//      over the protocol UART instead of the usual RES2 line. The Pico's
+//      runner classifies that as a memory_corruption finding.
 //
 // To also enable ESP-IDF heap poisoning + stack canaries (recommended for
 // PlatformIO users), add the following to platformio.ini:
@@ -91,8 +114,34 @@ static inline size_t memguard_check(const uint8_t* p) {
   return bad;
 }
 
+// Stack canary: a uint32_t on the local frame; we sample its address before
+// the call and check it didn't get clobbered.
+static const uint32_t STACK_CANARY = 0xCAFEBABEu;
+
+// -----------------------------------------------------------------------------
+// Quarantine state.
+// -----------------------------------------------------------------------------
+// The Pico can send "QUARANTINE\n" over UART to flip the chip into a software-
+// enforced lockout that survives reboots. While quarantined we refuse every
+// RUN command with `ERR quarantined ...`, so even if the kill-line wires
+// aren't physically connected the victim still stops doing useful work.
+//
+// `UNQUARANTINE\n` clears the flag (operator-controlled escape hatch).
+// `STATUS\n` reports the current state.
+//
+// State is persisted in NVS (flash-backed key/value) under namespace "gb"
+// so the lockout outlives a power cycle.
+static Preferences nvs;
+static bool        g_quarantined = false;
+
+// 8-byte secret used by the strcmp primitives.
+static const char    SECRET[]    = "hunter2!";
+static const uint8_t SECRET_LEN  = 8;
+
 // =============================================================================
-// default functions
+// Functions under test
+// Signature: int fn(const uint8_t* in, size_t n, uint8_t* out, size_t* out_n)
+// Each must be self-contained -- no Serial calls inside, nothing that yields.
 // =============================================================================
 
 // fn_id = 0: noop (calibration baseline)
@@ -101,7 +150,7 @@ int fn_noop(const uint8_t* in, size_t n, uint8_t* out, size_t* out_n) {
   *out_n = 0;
   return 0;
 }
-  
+
 // fn_id = 1: naive strcmp -- early-return on first mismatched byte (TIMING LEAK).
 int fn_strcmp_naive(const uint8_t* in, size_t n, uint8_t* out, size_t* out_n) {
   *out_n = 1;
@@ -114,7 +163,7 @@ int fn_strcmp_naive(const uint8_t* in, size_t n, uint8_t* out, size_t* out_n) {
   out[0] = 1;
   return 1;
 }
-  
+
 // fn_id = 2: constant-time compare -- always touches every byte (SAFE).
 int fn_strcmp_safe(const uint8_t* in, size_t n, uint8_t* out, size_t* out_n) {
   uint8_t diff = 0;
@@ -126,7 +175,7 @@ int fn_strcmp_safe(const uint8_t* in, size_t n, uint8_t* out, size_t* out_n) {
   *out_n = 1;
   return out[0];
 }
-  
+
 // fn_id = 3: user-supplied target. Forwards to gb_target_call() defined in
 // gb_target.cpp (which is just a sibling source file in this sketch folder).
 // The default stub is a no-op so the firmware always builds; users replace
@@ -175,10 +224,14 @@ static void hex_encode(const uint8_t* bytes, size_t n, char* out) {
 // =============================================================================
 // Cycle counter (Xtensa CCOUNT register) + Hardware Performance Counters (PMU)
 // =============================================================================
-
+//
+// CCOUNT is the always-on cycle counter. The Xtensa LX6 also exposes 4 software
+// programmable performance counters (PM0..PM3) controlled by PMG (global) and
+// PMCTRL0..3 (per-counter event select).
+//
 // We program PM0 = INSN_RETIRED, PM1 = BRANCH_TAKEN at boot. PM2/PM3 are left
 // idle but easy to add more events to.
-
+//
 // Event encoding for PMCTRLn (Xtensa LX6 PMU spec):
 //   bit  [0]    : counter enable
 //   bits [3:1]  : interrupt-level mask (0x7 = count at all levels)
@@ -191,8 +244,8 @@ static inline uint32_t get_ccount() {
   return cc;
 }
 
-static inline uint32_t read_pm0() { return 0; }   // insns retired
-static inline uint32_t read_pm1() { return 0; }   // branches taken
+static inline uint32_t read_pm0() { return 0; }   // insns retired (LX6 has no PMU)
+static inline uint32_t read_pm1() { return 0; }   // branches taken (LX6 has no PMU)
 
 static inline void setup_hpc() {
   // No-op on LX6. Function exists so the call site doesn't need an #ifdef
@@ -200,8 +253,10 @@ static inline void setup_hpc() {
 }
 
 static void hpc_selftest() {
+#if GB_DEBUG
   Serial.println("[esp32] hpc selftest  insns=0  branches=0  "
                  "(LX6 has no PMU -- 3 channels live: cycles, micros, power)");
+#endif
 }
 
 // =============================================================================
@@ -212,36 +267,43 @@ static uint32_t last_heartbeat_ms = 0;
 static uint32_t pings_seen = 0;
 
 // =============================================================================
-// Panic handler: emit a PANIC line over UART2 if the user's function under
-// test crashes. esp_register_shutdown_handler() runs late enough that
-// Serial2 is still alive but early enough to fire before the chip resets.
-// We only have a coarse "the chip is going down" signal -- not the actual
-// PC + reason -- but the runner classifies any PANIC line as a crash
-// finding, so the operator at least sees that this run died.
+// Panic handler: emit a PANIC line over the protocol UART if the user's
+// function under test crashes. esp_register_shutdown_handler() runs late
+// enough that the UART is still alive but early enough to fire before the
+// chip resets. We only have a coarse "the chip is going down" signal -- not
+// the actual PC + reason -- but the runner classifies any PANIC line as a
+// crash finding, so the operator at least sees that this run died.
 // =============================================================================
+
 static void gb_panic_emit() {
-  // Best-effort: print to BOTH Serial and Serial2 so whichever side is
-  // listening sees the notification.
-  Serial.println("[esp32] !!! shutdown handler fired -- last RUN likely crashed !!!");
-  Serial2.println("PANIC 0x0 shutdown_handler_fired");
-  Serial2.flush();
+  Serial.println("PANIC 0x0 shutdown_handler_fired");
   Serial.flush();
 }
 
 void setup() {
-  Serial.begin(115200);                             // USB debug 
-  Serial2.begin(115200, SERIAL_8N1, 16, 17);        // baud, cfg, rx, tx
+  // UART0 is BOTH the bootloader UART (so the Pico can flash us in BRIDGE
+  // mode) AND our runtime protocol UART. We do NOT call Serial2.begin()
+  // anymore; the Pico now sits on GPIO1/3 directly.
+  Serial.begin(115200);
 
   pinMode(PIN_TRIGGER_OUT, OUTPUT);
   digitalWrite(PIN_TRIGGER_OUT, LOW);
 
+  // Best-effort panic announcement. esp_register_shutdown_handler() only
+  // covers clean shutdowns; an actual hard panic on the ESP32 jumps through
+  // the IDF's panic_handler() before this fires. To emit on a true panic
+  // path you'd need to override esp_panic_handler() -- left as future work.
+  esp_register_shutdown_handler(gb_panic_emit);
+
   setup_hpc();
 
-  // restore state from nvs + quarantine
+  // Restore persistent quarantine state from NVS. If the chip was locked out
+  // before reboot, it stays locked out until an operator sends UNQUARANTINE.
   nvs.begin("gb", false);
   g_quarantined = nvs.getBool("quarantine", false);
 
   delay(200);
+#if GB_DEBUG
   Serial.println();
   Serial.println("[esp32] harness ready (3 channels live: cycles+micros on ESP32, power on Pico)");
   Serial.print  ("[esp32] functions: ");
@@ -251,48 +313,47 @@ void setup() {
   Serial.printf("[esp32] user_target name: %s\n", gb_target_name());
   if (g_quarantined) {
     Serial.println("[esp32] !!! BOOTED IN QUARANTINE !!!  RUN commands will be refused.");
-    Serial.println("[esp32] send 'UNQUARANTINE' over UART2 to clear the flag.");
+    Serial.println("[esp32] send 'UNQUARANTINE' to clear the flag.");
   }
+#endif
   hpc_selftest();
+  (void)last_heartbeat_ms;     // retained so existing telemetry hooks compile
+  (void)pings_seen;
 }
 
 void loop() {
-  uint32_t now = millis();
-  if (now - last_heartbeat_ms >= 5000) {
-    last_heartbeat_ms = now;
-    Serial.printf("[esp32] alive  ms=%lu  runs_seen=%lu\n",
-                  (unsigned long)now, (unsigned long)pings_seen);
-  }
+  // No periodic debug heartbeat here -- everything that hits Serial now
+  // shares a wire with the Pico's protocol parser, so unsolicited prints
+  // would corrupt the RES2/TRACE stream. Set GB_DEBUG=1 only when you've
+  // unplugged the Pico and are debugging via the ESP32 USB cable.
 
-  if (!Serial2.available()) return;
+  if (!Serial.available()) return;
 
-  String line = Serial2.readStringUntil('\n');
+  String line = Serial.readStringUntil('\n');
   line.trim();
   if (line.length() == 0) return;
 
   // ---- Control plane ----------------------------------------------------
   if (line == "STATUS") {
-    Serial2.printf("STATUS %s\n", g_quarantined ? "quarantined" : "running");
+    Serial.printf("STATUS %s\n", g_quarantined ? "quarantined" : "running");
     return;
   }
   if (line == "QUARANTINE") {
     g_quarantined = true;
     nvs.putBool("quarantine", true);
-    Serial2.println("ACK quarantined");
-    Serial.println("[esp32] !!! QUARANTINED via UART -- refusing further RUN commands !!!");
+    Serial.println("ACK quarantined");
     return;
   }
   if (line == "UNQUARANTINE") {
     g_quarantined = false;
     nvs.putBool("quarantine", false);
-    Serial2.println("ACK unquarantined");
-    Serial.println("[esp32] quarantine flag cleared; resuming normal operation");
+    Serial.println("ACK unquarantined");
     return;
   }
   // ---- End control plane ------------------------------------------------
 
   if (!line.startsWith("RUN ")) {
-    Serial2.printf("ERR bad command: %s\n", line.c_str());
+    Serial.printf("ERR bad command: %s\n", line.c_str());
     return;
   }
 
@@ -300,33 +361,54 @@ void loop() {
   // while the lockout is active. The hardware kill lines (driven by the
   // Pico) provide the "physical" version of the same intervention.
   if (g_quarantined) {
-    Serial2.println("ERR quarantined -- pod refuses to execute (send UNQUARANTINE to clear)");
+    Serial.println("ERR quarantined -- pod refuses to execute (send UNQUARANTINE to clear)");
     return;
   }
 
   int s1 = line.indexOf(' ');
   int s2 = line.indexOf(' ', s1 + 1);
   if (s1 < 0 || s2 < 0) {
-    Serial2.println("ERR malformed RUN");
+    Serial.println("ERR malformed RUN");
     return;
   }
   int    fn_id     = line.substring(s1 + 1, s2).toInt();
   String hex_input = line.substring(s2 + 1);
 
   if (fn_id < 0 || fn_id >= N_FUNCTIONS) {
-    Serial2.printf("ERR unknown fn_id %d\n", fn_id);
+    Serial.printf("ERR unknown fn_id %d\n", fn_id);
     return;
   }
 
-  uint8_t input[64];
-  int in_len = hex_decode(hex_input.c_str(), hex_input.length(), input, sizeof(input));
+  // Layout:
+  //   [pre_input_guard 32B] [input 64B] [post_input_guard 32B]
+  //   [pre_output_guard 32B] [output 64B] [post_output_guard 32B]
+  // The guards bracket each buffer so an overrun in EITHER direction is
+  // detected. We compose them into a single struct so the compiler keeps
+  // them adjacent in stack memory (no padding between fields with uint8_t).
+  struct {
+    uint8_t pre_in[32];
+    uint8_t input[64];
+    uint8_t post_in[32];
+    uint8_t pre_out[32];
+    uint8_t output[64];
+    uint8_t post_out[32];
+  } gb;
+  memguard_fill(gb.pre_in);
+  memguard_fill(gb.post_in);
+  memguard_fill(gb.pre_out);
+  memguard_fill(gb.post_out);
+
+  uint8_t* input  = gb.input;
+  uint8_t* output = gb.output;
+
+  int in_len = hex_decode(hex_input.c_str(), hex_input.length(), input, sizeof(gb.input));
   if (in_len < 0) {
-    Serial2.println("ERR bad hex");
+    Serial.println("ERR bad hex");
     return;
   }
 
-  uint8_t output[64];
   size_t  out_len = 0;
+  volatile uint32_t stack_canary_before = STACK_CANARY;
 
   // ===== Timed region -- everything between trigger HIGH and trigger LOW =====
   // We snapshot all four timing-class channels back-to-back around the call:
@@ -352,7 +434,6 @@ void loop() {
   int64_t  us1 = esp_timer_get_time();
   while ((micros() - trig_t0) < MIN_TRIGGER_US) { /* hold HIGH */ }
   digitalWrite(PIN_TRIGGER_OUT, LOW);
-
   // ===========================================================================
   // Memory-safety guards: check each shadow sentinel and the stack canary.
   // If any tripped, emit MEMVIOL instead of RES2 -- the Pico runner will
@@ -374,13 +455,10 @@ void loop() {
     } else if (bad_pre_out) {
       kind = "output_shadow_overflow";   overrun = bad_pre_out;
     }
-    Serial2.printf("MEMVIOL %s overrun=%u\n", kind, (unsigned)overrun);
-    Serial.printf("[esp32] !!! MEMVIOL %s overrun=%u !!! "
-                  "(canary=%s, pre_in=%u, post_in=%u, pre_out=%u, post_out=%u)\n",
-                  kind, (unsigned)overrun, canary_ok ? "ok" : "BROKEN",
-                  (unsigned)bad_pre_in, (unsigned)bad_post_in,
-                  (unsigned)bad_pre_out, (unsigned)bad_post_out);
+    Serial.printf("MEMVIOL %s overrun=%u\n", kind, (unsigned)overrun);
     pings_seen++;
+    (void)canary_ok; (void)bad_pre_in; (void)bad_post_in;
+    (void)bad_pre_out; (void)bad_post_out;
     return;
   }
 
@@ -392,9 +470,9 @@ void loop() {
   char hex_output[2 * sizeof(gb.output) + 1];
   hex_encode(output, out_len, hex_output);
 
-  Serial2.printf("RES2 %u %u %u %u %s\n",
-                 (unsigned)cycles, (unsigned)micros_,
-                 (unsigned)insns,  (unsigned)branches,
-                 hex_output);
+  Serial.printf("RES2 %u %u %u %u %s\n",
+                (unsigned)cycles, (unsigned)micros_,
+                (unsigned)insns,  (unsigned)branches,
+                hex_output);
   pings_seen++;
 }
