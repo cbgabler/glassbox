@@ -1,0 +1,89 @@
+# Hardware MCP Server Configuration
+#
+# Exposes the GlassBox hardware audit pipeline (auto_flash + verify, sweep
+# over every harness-compatible source file in a cloned repo) as MCP tools
+# the agent can call.
+server_id: "hardware_server"
+description: "Runs the GlassBox ESP32/Pico flash+verify audit against a cloned repo and reports per-file results."
+
+# Runtime configuration (relative path -> works on macOS/Linux/Windows
+# when the runner uses ParseAgentConfig's repo-root resolution).
+runtime:
+  type: "go"
+  command: "go"
+  args: ['hardwarego/hardware.go']
+  port: 8084
+
+# Tools provided by this server
+tools:
+  - tool_id: "list_hardware_targets"
+    description: |
+      Walk a cloned repository and return every C/C++ source file that
+      defines `gb_target_call(...)` (the GlassBox harness ABI). Use this
+      BEFORE start_hardware_audit so the user knows what will be tested.
+    handler: "list_hardware_targets"
+    input_schema:
+      properties:
+        repo_root:
+          type: "string"
+          description: "Absolute path to the cloned repo (e.g. the repo_root returned by clone_repo)."
+        filter:
+          type: "string"
+          description: "Optional regex applied to repo-relative path; only matching files are returned."
+      required:
+        - repo_root
+
+  - tool_id: "start_hardware_audit"
+    description: |
+      Kick off a background hardware audit: for every harness-compatible
+      source file in repo_root, copy it into the ESP32 harness's
+      gb_target.cpp slot, flash via the Pico bridge, and verify the
+      harness boots. Returns immediately with an audit_id; poll
+      get_hardware_audit_status for progress. Only one audit can run at a
+      time (hardware is shared).
+    handler: "start_hardware_audit"
+    input_schema:
+      properties:
+        repo_root:
+          type: "string"
+          description: "Absolute path to the cloned repo to audit."
+        filter:
+          type: "string"
+          description: "Optional regex; only matching files are flashed."
+        bridge_seconds:
+          type: "number"
+          description: "Pico bridge-mode timeout (default 90)."
+          default: 90
+        esp_port:
+          type: "string"
+          description: "Override ESP32 serial port (rarely needed)."
+        pico_port:
+          type: "string"
+          description: "Override Pico serial port (rarely needed)."
+      required:
+        - repo_root
+
+  - tool_id: "get_hardware_audit_status"
+    description: |
+      Return the current state of the most recent (or specified) audit:
+      overall state (running|done|cancelled|failed), per-target results,
+      progress counters, and the current step (compile/esptool/booting/
+      verifying). Safe to call repeatedly.
+    handler: "get_hardware_audit_status"
+    input_schema:
+      properties:
+        audit_id:
+          type: "string"
+          description: "Optional. If omitted, returns the most recent audit."
+
+  - tool_id: "cancel_hardware_audit"
+    description: |
+      Cancel a running audit: kills the in-flight auto_flash subprocess
+      and marks remaining targets as cancelled. The harness gb_target.cpp
+      is restored to its pre-audit state.
+    handler: "cancel_hardware_audit"
+    input_schema:
+      properties:
+        audit_id:
+          type: "string"
+          description: "Optional. If omitted, cancels the most recent audit."

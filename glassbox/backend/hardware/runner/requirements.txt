@@ -5,4 +5,5 @@ pandas>=2.1
 pyarrow>=14
 matplotlib>=3.8
 pyserial>=3.5
+esptool>=4.7
 tensorflow>=2.16

@@ -290,9 +290,28 @@ func createRunWorkspace() (string, string, string, error) {
 // findExistingRunBySource removed in simplified flow
 
 func resolveRunsDir() (string, error) {
-	// Use a fixed directory for cloned repos to simplify local development.
-	fixed := `C:\Users\antho\glassbox2\glassbox2\glassbox\backend\clonedrepos`
-	return filepath.Clean(fixed), nil
+	// Where cloned repos live. Resolution order:
+	//   1. CLONEDREPOS_DIR env var (operator override)
+	//   2. <glassbox_root>/glassbox/backend/clonedrepos (cross-platform default)
+	//   3. <cwd>/clonedrepos as a last resort
+	if v := strings.TrimSpace(os.Getenv("CLONEDREPOS_DIR")); v != "" {
+		abs, err := filepath.Abs(v)
+		if err == nil {
+			return filepath.Clean(abs), nil
+		}
+	}
+	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err == nil {
+		root := strings.TrimSpace(string(out))
+		if root != "" {
+			return filepath.Clean(filepath.Join(root, "glassbox", "backend", "clonedrepos")), nil
+		}
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(filepath.Join(cwd, "clonedrepos")), nil
 }
 
 func cloneGitRepo(repoRoot, gitURL, branch string) error {
