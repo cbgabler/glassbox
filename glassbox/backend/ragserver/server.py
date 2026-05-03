@@ -2,9 +2,9 @@ import os
 import asyncio
 from typing import Dict, Optional
 from fastapi import FastAPI, HTTPException, Body
-from .models import Finding, Severity, SearchRequest, IndexCodeRequest, AddFindingRequest
-from .embedder import FindingsEmbedder, CodeEmbedder
-from .store import RAGStore
+from models import Finding, Severity, SearchRequest, IndexCodeRequest, AddFindingRequest
+from embedder import FindingsEmbedder, CodeEmbedder
+from store import RAGStore
 
 app = FastAPI(title="GlassBox RAG MCP Server")
 

@@ -5,8 +5,8 @@ import pickle
 import pathspec
 from pathlib import Path
 from typing import List, Dict, Optional
-from .models import Finding, Severity
-from .embedder import FindingsEmbedder, CodeEmbedder
+from models import Finding, Severity
+from embedder import FindingsEmbedder, CodeEmbedder
 
 class RAGStore:
     def __init__(self, run_id: str, findings_embedder: FindingsEmbedder, code_embedder: CodeEmbedder):
