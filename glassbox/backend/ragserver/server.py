@@ -1,20 +1,13 @@
 import os
 import asyncio
-import numpy as np
-from pathlib import Path
-from dotenv import load_dotenv
-from typing import Dict, Optional, List, Any
+import uuid
+from typing import Dict, Optional, Any
 from fastapi import FastAPI, HTTPException, Body
 from models import (
     Finding,
     Severity,
     SearchRequest,
     IndexCodeRequest,
-    AddFindingRequest,
-    ExportVectorsRequest,
-    ExportVectorsPlotRequest,
-    ExportVectorsPlotResponse,
-    VectorPoint,
     AddMemoryNoteRequest,
     SearchMemoryRequest,
 )
@@ -112,10 +105,39 @@ def _align_record_vectors(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 async def health():
     return {"status": "ok", "run_ids": list(stores.keys())}
 
+def _normalize_finding_payload(payload: Dict[str, Any]) -> tuple[str, Finding]:
+    run_id = payload.get("run_id")
+    if not run_id:
+        raise HTTPException(status_code=400, detail="run_id is required")
+
+    raw_finding = payload.get("finding") if isinstance(payload.get("finding"), dict) else payload
+
+    severity_value = str(raw_finding.get("severity", "LOW")).upper()
+    try:
+        severity = Severity(severity_value)
+    except ValueError:
+        severity = Severity.LOW
+
+    finding = Finding(
+        id=str(raw_finding.get("id") or raw_finding.get("finding_id") or uuid.uuid4()),
+        scanner=str(raw_finding.get("scanner") or raw_finding.get("category") or "unknown"),
+        severity=severity,
+        title=str(raw_finding.get("title") or raw_finding.get("name") or "Untitled finding"),
+        description=str(raw_finding.get("description") or raw_finding.get("details") or ""),
+        file=raw_finding.get("file"),
+        line=raw_finding.get("line"),
+        snippet=raw_finding.get("snippet"),
+        advice=str(raw_finding.get("advice") or raw_finding.get("fix") or raw_finding.get("remediation") or ""),
+        can_hw_confirm=bool(raw_finding.get("can_hw_confirm", False)),
+    )
+    return run_id, finding
+
+
 @app.post("/execute/add_finding")
-async def add_finding(request: AddFindingRequest):
-    store = get_store(request.run_id)
-    await store.add_finding(request.finding)
+async def add_finding(payload: Dict[str, Any] = Body(...)):
+    run_id, finding = _normalize_finding_payload(payload)
+    store = get_store(run_id)
+    await store.add_finding(finding)
     store.save()  # Auto-save for safety in hackathon build
     return {"ok": True}
 

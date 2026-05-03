@@ -293,11 +293,9 @@ agents:
       model: gpt-4o-mini
       temperature: 0.7
       max_tokens: 4000
-      api_key: 
     servers:
       - "serverconfigs/googlesearchconfig.yaml"
       - "serverconfigs/repocontextconfig.yaml"
       - "serverconfigs/ragconfig.yaml"
-      - "serverconfigs/hardwareconfig.yaml"
     server_generation: false
     infra_generation: false

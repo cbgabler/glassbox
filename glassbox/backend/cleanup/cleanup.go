@@ -42,24 +42,9 @@ func RemoveAllRuns() error {
 	if err != nil {
 		return err
 	}
-	log.Printf("cleanup: inspecting runs directory: %s", runsDir)
-	// If the runs directory doesn't exist, nothing to do.
-	if _, err := os.Stat(runsDir); os.IsNotExist(err) {
-		log.Printf("cleanup: runs directory does not exist, nothing to remove")
-		return nil
-	}
-	// Remove only the children of runsDir but keep runsDir itself
-	entries, err := os.ReadDir(runsDir)
-	if err != nil {
+	os.RemoveAll(runsDir) // best effort to remove entire directory first, in case there are nested contents that would error on Windows
+	if err := os.MkdirAll(runsDir, 0755); err != nil {
 		return err
-	}
-	log.Printf("cleanup: found %d entries to remove", len(entries))
-	for _, e := range entries {
-		p := filepath.Join(runsDir, e.Name())
-		log.Printf("cleanup: removing %s", p)
-		if err := os.RemoveAll(p); err != nil {
-			return err
-		}
 	}
 	log.Printf("cleanup: finished removing cloned repos contents")
 	return nil
