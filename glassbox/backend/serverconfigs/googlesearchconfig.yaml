@@ -6,7 +6,7 @@ description: "Provides Google search functionality for agent workflows"
 runtime:
   type: "go"
   command: "go"
-  args: ['C:\Users\antho\glassbox2\glassbox2\glassbox\backend\googlesearchserver\googlesearch.go']
+  args: ['./googlesearchserver/googlesearch.go']
   port: 8082
 
 # Environment variables required

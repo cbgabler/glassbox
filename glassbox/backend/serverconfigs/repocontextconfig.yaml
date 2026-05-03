@@ -6,7 +6,7 @@ description: "Clones repos into GlassBox runs and exposes repo structure and fil
 runtime:
   type: "go"
   command: "go"
-  args: ['C:\Users\antho\glassbox2\glassbox2\glassbox\backend\repocontextserver\repocontext.go']
+  args: ['./repocontextserver/repocontext.go']
   port: 8083
 
 # Tools provided by this server

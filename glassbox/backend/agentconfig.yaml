@@ -6,8 +6,8 @@ agents:
       temperature: 0.7
       max_tokens: 3000
     servers:
-      - 'C:\Users\antho\glassbox2\glassbox2\glassbox\backend\serverconfigs\googlesearchconfig.yaml'
-      - 'C:\Users\antho\glassbox2\glassbox2\glassbox\backend\serverconfigs\repocontextconfig.yaml'
+      - './serverconfigs/googlesearchconfig.yaml'
+      - './serverconfigs/repocontextconfig.yaml'
     server_generation: false
     infra_generation: false
     
