@@ -1,36 +1,5 @@
 # GlassBox RAG Server
 
-## Visual test (quick)
-```powershell
-cd glassbox/backend/ragserver
-venv\Scripts\python.exe -m pip install -r requirements.txt
-venv\Scripts\python.exe visual_test.py
-```
-
-## Visualizer (local Dash UI)
-```powershell
-cd glassbox/backend/ragserver
-venv\Scripts\python.exe -m pip install -r requirements.txt
-venv\Scripts\python.exe visualizer\plotly_dash_viewer.py --run-id visual_test_run
-```
-
-## Bash helpers (mock data + visualizer)
-```bash
-cd glassbox/backend/ragserver
-
-# 1) Seed mock findings + code chunks into FAISS for a run_id
-bash ./seed_mock_data.sh visual_test_run
-
-# 2) Launch the visualizer in 3D
-bash ./run_visualizer.sh visual_test_run
-```
-
-Optional environment variables:
-- `RAG_SERVER_URL` (default `http://localhost:8000`)
-- `DIMS` (default `3`)
-- `REDUCE_METHOD` (default `umap`)
-- `PORT` (default `8050`)
-
 ## What is it?
 
 The **RAG server** is a lightweight Python side‑car that provides Retrieval‑Augmented Generation (RAG) capabilities for the GlassBox security agent.  It stores audit findings and code snippets in a local **FAISS** vector database, allowing the main Claude‑based agent to retrieve relevant information quickly during a scan.
@@ -75,10 +44,49 @@ The server is registered in `agentconfig.yaml` with a **relative path** so any t
 **Run the server** (inside the `ragserver` folder):
 ```powershell
 # Windows PowerShell
-.
-venv\Scripts\activate   # activate virtual env
-uvicorn server:app --reload --port 8000
+cd glassbox/backend/ragserver
+venv\Scripts\python.exe -m pip install -r requirements.txt
+venv\Scripts\python.exe -m uvicorn server:app --host 0.0.0.0 --port 8085
 ```
+
+```bash
+# Git Bash
+cd glassbox/backend/ragserver
+./venv/Scripts/python.exe -m pip install -r requirements.txt
+./venv/Scripts/python.exe -m uvicorn server:app --host 0.0.0.0 --port 8085
+```
+
 Or with the Go agent, which launches the server automatically.
 
 ---
+
+## Visual test (quick)
+```powershell
+cd glassbox/backend/ragserver
+venv\Scripts\python.exe -m pip install -r requirements.txt
+venv\Scripts\python.exe visual_test.py
+```
+
+## Visualizer (local Dash UI)
+```powershell
+cd glassbox/backend/ragserver
+venv\Scripts\python.exe -m pip install -r requirements.txt
+venv\Scripts\python.exe visualizer\plotly_dash_viewer.py --run-id visual_test_run
+```
+
+## Bash helpers (mock data + visualizer)
+```bash
+cd glassbox/backend/ragserver
+
+# 1) Seed mock findings + code chunks into FAISS for a run_id
+bash ./seed_mock_data.sh visual_test_run
+
+# 2) Launch the visualizer in 3D
+bash ./run_visualizer.sh visual_test_run
+```
+
+Optional environment variables:
+- `RAG_SERVER_URL` (default `http://localhost:8000`)
+- `DIMS` (default `3`)
+- `REDUCE_METHOD` (default `umap`)
+- `PORT` (default `8050`)

@@ -1,5 +1,18 @@
-const API_URL = "http://localhost:8080";
-const WS_URL  = "ws://localhost:8080/ws";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8080";
+const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:8080/ws";
+const CHAT_MIN_DELAY_MS = Number(import.meta.env.VITE_CHAT_MIN_DELAY_MS || "2500");
+
+let lastChatRequestAt = 0;
+
+async function waitForChatRateLimit(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - lastChatRequestAt;
+  const waitMs = CHAT_MIN_DELAY_MS - elapsed;
+  if (waitMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+  lastChatRequestAt = Date.now();
+}
 
 // -------------------------------------------------------------------
 // Go backend types (mirrors chat package)
@@ -208,12 +221,16 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
 
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (!res.ok) {
+    const errorText = (await res.text()).trim();
+    throw new Error(errorText ? `HTTP ${res.status}: ${errorText}` : `HTTP ${res.status}`);
+  }
   console.log(res)
   return res.json();
 }
 
 export async function sendChatPrompt(prompt: string): Promise<ParsedResponse> {
+  await waitForChatRateLimit();
   const message = await post<Message>("/chat", { message: prompt });
   console.log("[api] raw Message from backend:", message)
   return parseAgentResponse(message);

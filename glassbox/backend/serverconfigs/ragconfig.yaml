@@ -6,7 +6,7 @@ description: "Go-based vector database for semantic search over audit findings a
 runtime:
   type: "python"
   command: "cmd"
-  args: ["/c", "cd C:\\Users\\antho\\glassbox2\\glassbox2\\glassbox\\backend\\ragserver && python -m uvicorn server:app --host 0.0.0.0 --port 8085"]
+  args: ["/c", "cd ragserver && venv\\Scripts\\python.exe -m uvicorn server:app --host 0.0.0.0 --port 8085"]
   port: 8085
 # Environment variables required
 env:

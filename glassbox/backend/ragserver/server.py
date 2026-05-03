@@ -1,18 +1,33 @@
 import os
 import asyncio
 import uuid
-from typing import Dict, Optional, Any
+import warnings
+from pathlib import Path
+from typing import Dict, Optional, Any, List, Tuple
+import numpy as np
 from fastapi import FastAPI, HTTPException, Body
+from dotenv import load_dotenv
 from models import (
     Finding,
     Severity,
     SearchRequest,
     IndexCodeRequest,
+    ExportVectorsRequest,
+    ExportVectorsPlotRequest,
+    ExportVectorsPlotResponse,
+    VectorPoint,
     AddMemoryNoteRequest,
     SearchMemoryRequest,
 )
 from embedder import FindingsEmbedder, CodeEmbedder
 from store import RAGStore
+
+# Silence Transformers cache deprecation noise in local runs.
+warnings.filterwarnings(
+    "ignore",
+    message=r".*TRANSFORMERS_CACHE.*deprecated.*HF_HOME.*",
+    category=FutureWarning,
+)
 
 dotenv_path = Path(__file__).resolve().parents[3] / ".env"
 load_dotenv(dotenv_path)
@@ -105,7 +120,7 @@ def _align_record_vectors(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 async def health():
     return {"status": "ok", "run_ids": list(stores.keys())}
 
-def _normalize_finding_payload(payload: Dict[str, Any]) -> tuple[str, Finding]:
+def _normalize_finding_payload(payload: Dict[str, Any]) -> Tuple[str, Finding]:
     run_id = payload.get("run_id")
     if not run_id:
         raise HTTPException(status_code=400, detail="run_id is required")
@@ -233,8 +248,12 @@ async def save_index(run_id: str = Body(..., embed=True)):
 async def load_index(run_id: str = Body(..., embed=True)):
     store = get_store(run_id)
     store.load()
-<<<<<<< HEAD
-    return {"ok": True, "findings_count": len(store.findings_metadata), "code_chunks_count": len(store.code_metadata)}
+    return {
+        "ok": True,
+        "findings_count": len(store.findings_metadata),
+        "code_chunks_count": len(store.code_metadata),
+        "memory_notes_count": len(store.memory_metadata),
+    }
 
 @app.post("/execute/export_vectors")
 async def export_vectors(request: ExportVectorsRequest):
@@ -331,11 +350,3 @@ async def export_vectors_plot(request: ExportVectorsPlotRequest):
         total_findings=total_findings,
         total_code=total_code,
     )
-=======
-    return {
-        "ok": True,
-        "findings_count": len(store.findings_metadata),
-        "code_chunks_count": len(store.code_metadata),
-        "memory_notes_count": len(store.memory_metadata),
-    }
->>>>>>> c1f602ef78f2bd5428342fb3e91b9a708806c1d3
