@@ -1,0 +1,10 @@
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+venv/
+*.log
+
+# NOTE: we deliberately do NOT ignore .env files in this demo repo --
+# the whole point is to have committed secrets for GlassBox to find.

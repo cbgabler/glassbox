@@ -1,0 +1,23 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Configure GitHub auth
+        env:
+          GH_TOKEN: ghp_DEMOFAKEFAKEFAKEFAKEFAKEFAKEFAKEFAKE
+        run: |
+          echo "$GH_TOKEN" | gh auth login --with-token
+
+      - name: Push artifacts
+        env:
+          API_KEY: "demo-prod-api-key-9f2e1c0b8a7d6e5f4321"
+        run: |
+          curl -H "Authorization: Bearer $API_KEY" https://api.example.com/deploy
