@@ -8,6 +8,7 @@ agents:
       max_tokens: 3000
     servers:
       - 'C:\Users\antho\glassbox2\glassbox2\glassbox\backend\serverconfigs\googlesearchconfig.yaml'
+      - 'c:\Users\wadiwalf\Projects\Hack\glassbox\glassbox\backend\serverconfigs\ragconfig.yaml'
     server_generation: true
     infra_generation: true
     

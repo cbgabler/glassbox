@@ -1,0 +1,8 @@
+faiss-cpu>=1.7.4
+sentence-transformers>=2.6.0
+fastapi>=0.110.0
+uvicorn>=0.29.0
+openai>=1.0.0
+numpy
+pydantic>=2.0.0
+pathspec>=0.12.1
