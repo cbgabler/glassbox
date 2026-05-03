@@ -5,10 +5,8 @@ description: "Go-based vector database for semantic search over audit findings a
 # Runtime configuration
 runtime:
   type: "python"
-  command: "python3"
-  # --app-dir tells uvicorn where to find `server:app` without us needing to cd.
-  # Paths are resolved relative to wherever main.exe is launched (glassbox/backend/).
-  args: ["-m", "uvicorn", "server:app", "--app-dir", "ragserver", "--host", "0.0.0.0", "--port", "8085"]
+  command: "cmd"
+  args: ["/c", "cd C:\\Users\\antho\\glassbox2\\glassbox2\\glassbox\\backend\\ragserver && python -m uvicorn server:app --host 0.0.0.0 --port 8085"]
   port: 8085
 # Environment variables required
 env:
