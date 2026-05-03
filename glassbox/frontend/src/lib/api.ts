@@ -51,10 +51,10 @@ export interface RepoTreeResponse {
 
 // FileNode is the frontend tree shape derived from RepoTreeResponse
 export interface FileNode {
-  name:            string;
-  type:            "file" | "folder";
-  children?:       FileNode[];
-  status?:         "normal" | "vulnerable" | "warning";
+  name:             string;
+  type:             "file" | "folder";
+  children?:        FileNode[];
+  status?:          "normal" | "vulnerable" | "warning";
   vulnDescription?: string;
 }
 
@@ -63,15 +63,26 @@ export interface FileNode {
 // -------------------------------------------------------------------
 
 export interface ParsedResponse {
-  // <<repo>> blocks: parse content as RepoTreeResponse JSON
-  repo:  RepoTreeResponse[];
-  // <<code>> blocks: render as markdown
-  code:  string[];
-  // <<chat>> blocks + unwrapped text: render as markdown
-  chat:  string[];
-  // Tool call/result surfaced directly from the Message (no tags needed)
+  repo:        RepoTreeResponse[];
+  code:        string[];
+  chat:        string[];
   toolCall?:   ToolCall;
   toolResult?: ToolResult;
+}
+
+// -------------------------------------------------------------------
+// Sanitize raw content before parsing
+// Strips markdown auto-links the model generates, e.g.:
+//   [localhost](http://localhost) -> localhost
+//   <http://localhost:8000> -> (removed)
+// -------------------------------------------------------------------
+
+function sanitizeContent(content: string): string {
+  return content
+    // [text](url) -> text  (keep the display text, drop the link)
+    .replace(/\[([^\]]+)\]\(https?:\/\/[^)]+\)/g, "$1")
+    // <http://...> or <https://...> -> remove entirely
+    .replace(/<https?:\/\/[^>]+>/g, "")
 }
 
 // -------------------------------------------------------------------
@@ -86,7 +97,10 @@ function extractBlocks(content: string, tag: string): { blocks: string[]; remain
   let match;
   while ((match = capture.exec(content)) !== null) {
     let block = match[1].trim();
+    // Strip markdown code fences the agent wraps around JSON
     block = block.replace(/^```[\w]*\n?/, "").replace(/\n?```$/, "").trim();
+    // Strip markdown auto-links inside blocks
+    block = sanitizeContent(block);
     blocks.push(block);
   }
 
@@ -94,37 +108,55 @@ function extractBlocks(content: string, tag: string): { blocks: string[]; remain
 }
 
 export function parseAgentResponse(message: Message): ParsedResponse {
-  let remaining = message.content;
-  
+  // Sanitize the entire message content first
+  const sanitized = sanitizeContent(message.content);
+  let remaining = sanitized;
+
   console.log("[parser] raw message content:", message.content)
 
+  // <<repo>> — expect JSON
   const { blocks: rawRepo, remainder: afterRepo } = extractBlocks(remaining, "repo");
   remaining = afterRepo;
   console.log("[parser] <<repo>> blocks found:", rawRepo.length, rawRepo)
 
   const repo: RepoTreeResponse[] = rawRepo.flatMap(block => {
-    try { 
+    try {
       const parsed = JSON.parse(block) as RepoTreeResponse
       console.log("[parser] <<repo>> parsed JSON ok, entries:", parsed.entries?.length)
       return [parsed]
     }
-    catch (e) { 
+    catch (e) {
       console.warn("[parser] <<repo>> JSON parse failed:", e, "\nraw block:", block)
       return []
     }
   });
 
+  // <<code>> — markdown strings
   const { blocks: code, remainder: afterCode } = extractBlocks(remaining, "code");
   remaining = afterCode;
   console.log("[parser] <<code>> blocks found:", code.length)
 
+  // <<chat>> — markdown strings
   const { blocks: chat, remainder: afterChat } = extractBlocks(remaining, "chat");
   remaining = afterChat;
   console.log("[parser] <<chat>> blocks found:", chat.length)
 
-  if (remaining.length > 0) {
-    console.log("[parser] unwrapped remainder (added to chat):", remaining)
-    chat.push(remaining)
+  // Only add remainder if it looks like meaningful prose:
+  // - longer than 100 chars (filters out model noise like "NVIDIA NeMo()")
+  // - doesn't look like a leaked <<code>> finding header
+  // - doesn't look like a tool call artifact
+  const trimmedRemainder = remaining.trim();
+  if (
+    trimmedRemainder.length > 100 &&
+    !trimmedRemainder.startsWith("##") &&
+    !trimmedRemainder.includes("Calling tool:") &&
+    !trimmedRemainder.includes("NVIDIA") &&
+    !trimmedRemainder.match(/^\[(?:CRITICAL|HIGH|MEDIUM|LOW)\]/)
+  ) {
+    console.log("[parser] unwrapped remainder (added to chat):", trimmedRemainder)
+    chat.push(trimmedRemainder)
+  } else if (trimmedRemainder.length > 0) {
+    console.log("[parser] remainder discarded as noise:", trimmedRemainder)
   }
 
   const result = { repo, code, chat, toolCall: message.tool_call, toolResult: message.tool_result }
@@ -179,11 +211,11 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   console.log(res)
   return res.json();
-
 }
 
 export async function sendChatPrompt(prompt: string): Promise<ParsedResponse> {
   const message = await post<Message>("/chat", { message: prompt });
+  console.log("[api] raw Message from backend:", message)
   return parseAgentResponse(message);
 }
 

@@ -19,8 +19,10 @@ func main() {
 		}
 	}()
 
-	if err := godotenv.Load("../.env"); err != nil {
+	if err := godotenv.Load(".env"); err != nil {
 		log.Println("No .env file found, using system env")
+	} else {
+		log.Println("✓ Loaded .env successfully")
 	}
 
 	ag, err := parseagentprotocol.ParseAgentConfig()

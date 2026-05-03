@@ -1,18 +1,13 @@
 # RAG Server Configuration
 server_id: "rag_server"
-description: "FAISS vector database for semantic search over audit findings and repo code"
+description: "Go-based vector database for semantic search over audit findings and repo code"
 
 # Runtime configuration
 runtime:
   type: "python"
-  command: "python"
-  # We use -m uvicorn to run the FastAPI app
-  # Note: The launcher will use the venv if we point the command to the venv's python
-  # However, the current launcher assumes 'python' is in path. 
-  # We might need to adjust the command to the absolute path of the venv python if not globally available.
-  args: ['-m', 'uvicorn', 'ragserver.server:app', '--port', '8083']
-  port: 8083
-
+  command: "cmd"
+  args: ["/c", "cd C:\\Users\\antho\\glassbox2\\glassbox2\\glassbox\\backend\\ragserver && python -m uvicorn server:app --host 0.0.0.0 --port 8085"]
+  port: 8085
 # Environment variables required
 env:
   NVIDIA_API_KEY: "${NVIDIA_API_KEY}"
@@ -22,7 +17,7 @@ env:
 # Tools provided by this server
 tools:
   - tool_id: "search_findings"
-    description: "Semantic search over audit findings. Use this to answer questions like 'show me all password-related vulnerabilities' or 'what should I fix first?'"
+    description: "Semantic search over audit findings for this run_id."
     handler: "search_findings"
     input_schema:
       properties:
@@ -33,7 +28,7 @@ tools:
           type: "string"
           description: "Natural language search query"
         k:
-          type: "integer"
+          type: "number"
           description: "Number of results to return (default: 5)"
           default: 5
         severity_filter:
@@ -47,7 +42,7 @@ tools:
         - query
 
   - tool_id: "search_code"
-    description: "Semantic search over the audited repository's source code. Use this to find code related to a topic."
+    description: "Semantic search over indexed repository source code. Must call index_code for this run_id before using search_code."
     handler: "search_code"
     input_schema:
       properties:
@@ -58,7 +53,7 @@ tools:
           type: "string"
           description: "Natural language or code pattern to search for"
         k:
-          type: "integer"
+          type: "number"
           description: "Number of results to return (default: 5)"
           default: 5
       required:
@@ -66,7 +61,7 @@ tools:
         - query
 
   - tool_id: "index_code"
-    description: "Index the repository code into the vector database. Should be called once at the start of an audit."
+    description: "Index repository code into the vector database for a run_id. Call this at audit start before any search_code calls."
     handler: "index_code"
     input_schema:
       properties:
@@ -79,6 +74,54 @@ tools:
       required:
         - run_id
         - repo_path
+
+  - tool_id: "index_status"
+    description: "Get current index status for a run_id (findings count, code chunk count, memory notes count)."
+    handler: "index_status"
+    input_schema:
+      properties:
+        run_id:
+          type: "string"
+          description: "The unique ID for the current audit run"
+      required:
+        - run_id
+
+  - tool_id: "search_memory"
+    description: "Semantic search over reusable long-term notes (insights + snippets + fixes) saved from prior workflows. Use this first for future audits."
+    handler: "search_memory"
+    input_schema:
+      properties:
+        run_id:
+          type: "string"
+          description: "The memory namespace for this audit family or project"
+        query:
+          type: "string"
+          description: "Natural language query for prior solutions/insights"
+        k:
+          type: "number"
+          description: "Number of notes to return (default: 5)"
+          default: 5
+        tag_filter:
+          type: "string"
+          description: "Optional: filter by one tag (e.g. sidechannel, auth, parser)"
+      required:
+        - run_id
+        - query
+
+  - tool_id: "add_memory_note"
+    description: "Persist a reusable note at the end of a workflow so future runs can retrieve it."
+    handler: "add_memory_note"
+    input_schema:
+      properties:
+        run_id:
+          type: "string"
+          description: "The memory namespace for this audit family or project"
+        note:
+          type: "object"
+          description: "Memory note with title/problem/insight and optional snippet/file/line/tags"
+      required:
+        - run_id
+        - note
 
   - tool_id: "add_finding"
     description: "Index a new audit finding into the vector database. Called automatically by the scanner orchestrator."
