@@ -19,8 +19,62 @@ tools:
   - tool_id: "list_hardware_targets"
     description: |
       Walk a cloned repository and return every C/C++ source file that
-      defines `gb_target_call(...)` (the GlassBox harness ABI). Use this
-      BEFORE start_hardware_audit so the user knows what will be tested.
+      already defines `gb_target_call(...)` (the GlassBox harness ABI).
+
+      DOMAIN FIT (read this first):
+      GlassBox audits cryptographic, authentication, parsing, and
+      comparison code on real ESP32 hardware -- functions that take
+      a byte buffer + length and behave deterministically in < ~100 ms
+      with no STL, no iostream, no dynamic allocation. It is NOT a
+      general-purpose code review tool. If the repo is a game, web app,
+      CLI tool, CRUD service, UI component, etc., it is OUT OF SCOPE
+      regardless of whether anything compiles.
+
+      You MUST call this BEFORE start_hardware_audit. Branch on the
+      result:
+
+        BRANCH A -- count > 0:
+          The repo is natively harness-shaped. Show the user
+          response.targets, then call start_hardware_audit.
+
+        BRANCH B -- count == 0 AND the repo plausibly contains
+        crypto/auth/parser/comparison code:
+          DO NOT give up. DO NOT tell the user to add gb_target_call
+          themselves -- that recommendation is FORBIDDEN. Instead:
+            1. For each .cpp/.c file in response.skipped, fetch its
+               contents (use the repo_context_server tools).
+            2. Identify functions whose signatures match one of the
+               three supported shapes:
+                 - int|bool|void f(const uint8_t* p, size_t n)
+                 - int|bool|void f(const uint8_t* a, const uint8_t* b, size_t n)
+                 - int f(const uint8_t* in, size_t in_len, uint8_t* out, size_t* out_len)
+            3. For each candidate, call register_synthetic_target with
+               {repo_root, source_file (relative), function_name}
+               (and reference_hex if it's a 2-pointer comparator).
+            4. Re-call list_hardware_targets to confirm the synthetic
+               wrappers now show up, then call start_hardware_audit.
+
+        BRANCH C -- count == 0 AND no candidate functions exist (the
+        repo is a game, web app, UI library, etc.):
+          The repo is OUT OF SCOPE for GlassBox. Tell the user EXACTLY
+          this kind of message (paraphrase, but keep the substance):
+            "This repo (<name>) is a <one-line classification: e.g.
+             console C++ game, Python web app, React UI library>.
+             GlassBox audits cryptographic, authentication, parsing, and
+             comparison code on real ESP32 hardware -- it doesn't apply
+             to <classification>. If you have a repo with crypto, auth,
+             token verification, or byte-buffer parsing code you'd like
+             audited, share that one instead."
+          DO NOT recommend adding gb_target_call. DO NOT recommend
+          'review for buffer overflows / memory leaks / input validation'
+          (that's not what GlassBox does). DO NOT offer a generic code
+          review.
+
+      Every response includes `harness_abi_signature` and
+      `harness_abi_header` for reference, but NEVER quote them to the
+      user as a "to make this work, add this function" instruction.
+      Their only purpose is internal: telling YOU what register_synthetic_target
+      synthesizes on the user's behalf.
     handler: "list_hardware_targets"
     input_schema:
       properties:
@@ -33,14 +87,130 @@ tools:
       required:
         - repo_root
 
+  - tool_id: "register_synthetic_target"
+    description: |
+      Wrap a function in the user's repo as a flashable harness target,
+      WITHOUT asking the user to modify their code. You identify a
+      candidate function and tell us where it lives; the server reads
+      the file, parses the function's signature, picks a wrapper
+      template, and writes a generated `gb_target.cpp` into
+      `<repo_root>/__glassbox_synthetic__/<target_name>.cpp` (the
+      regular scanner picks it up automatically on the next
+      list_hardware_targets / start_hardware_audit).
+
+      Payload (keep it minimal -- the server does everything else):
+
+          {
+            "repo_root":     "<absolute path to the cloned repo>",
+            "source_file":   "<path relative to repo_root>",
+            "function_name": "<C identifier>",
+            "reference_hex": "<optional, see below>",
+            "target_name":   "<optional override; defaults to function_name>"
+          }
+
+      Supported function signature shapes (anything else returns
+      error_code=unsupported_signature with a list of accepted shapes):
+
+        - bytes_len       : int|bool|void f(const uint8_t* p, size_t n)
+        - comparator_len  : int|bool|void f(const uint8_t* a, const uint8_t* b, size_t n)
+                            REQUIRES reference_hex -- the constant the
+                            function compares secret against (the value
+                            an attacker is trying to recover). Example:
+                            reference_hex="676c617373626f78".
+        - harness_native  : int f(const uint8_t* in, size_t in_len,
+                                  uint8_t* out, size_t* out_len)
+
+      Constraints to remember when picking a function:
+        * Must be pure C/C++ (no Serial, delay, wifi, flash writes,
+          dynamic allocation that won't fit on ESP32, no STL containers
+          like vector/string/unordered_map, no iostream).
+        * Must complete in < ~100 ms.
+        * Inputs <= 64 bytes, outputs <= 64 bytes.
+        * If `#include`-ing the user's source pulls in any of the above,
+          the audit's compile step will fail and you'll see the error in
+          the audit result -- pick a different function or file then.
+
+      Successful response shape:
+
+          {
+            "repo_root": "...", "source_file": "...", "function_name": "...",
+            "shape_used": "bytes_len|comparator_len|harness_native",
+            "wrapper_path": "<absolute>",
+            "wrapper_rel_path": "__glassbox_synthetic__/<name>.cpp",
+            "parsed_signature": "<echo of the matched declaration>",
+            "harness_abi_signature_used": "int gb_target_call(...)"
+          }
+
+      You can register multiple targets back-to-back from the same repo.
+      The synthetic dir is wiped at the end of every audit, so always
+      re-register before kicking off a new audit on the same repo.
+    handler: "register_synthetic_target"
+    input_schema:
+      properties:
+        repo_root:
+          type: "string"
+          description: "Absolute path to the cloned repo."
+        source_file:
+          type: "string"
+          description: "Path to the user's source file, RELATIVE to repo_root."
+        function_name:
+          type: "string"
+          description: "C identifier naming the function to wrap. Must appear as a single-line declaration or definition in source_file."
+        reference_hex:
+          type: "string"
+          description: "Hex-encoded byte string. REQUIRED when the function has a 2-pointer comparator signature; ignored otherwise. 1..64 bytes after decoding."
+        target_name:
+          type: "string"
+          description: "Optional override for the synthesized file's basename (defaults to function_name). Must be a valid C identifier."
+      required:
+        - repo_root
+        - source_file
+        - function_name
+
   - tool_id: "start_hardware_audit"
     description: |
       Kick off a background hardware audit: for every harness-compatible
-      source file in repo_root, copy it into the ESP32 harness's
+      source file in repo_root (NATIVE files defining gb_target_call,
+      PLUS any wrappers you previously registered via
+      register_synthetic_target), copy it into the ESP32 harness's
       gb_target.cpp slot, flash via the Pico bridge, and verify the
       harness boots. Returns immediately with an audit_id; poll
       get_hardware_audit_status for progress. Only one audit can run at a
-      time (hardware is shared).
+      time (hardware is shared). The synthetic wrapper directory is
+      cleaned up automatically when the audit ends.
+
+      PRECONDITIONS:
+        1. You must have called list_hardware_targets at least once.
+        2. If that returned count == 0, you must register at least one
+           synthetic target via register_synthetic_target BEFORE calling
+           this -- otherwise this returns HTTP 400 error_code=no_targets.
+
+      The no_targets error response shape:
+
+          {
+            "error":      "no harness-compatible source files found in repo_root",
+            "error_code": "no_targets",
+            "details": {
+              "repo_root":             "...",
+              "cpp_files_scanned":     N,
+              "harness_compatible":    0,
+              "skipped_count":         N,
+              "skipped_examples":      [{"rel_path": "...", "reason": "..."}],
+              "harness_abi_signature": "int gb_target_call(...);",
+              "harness_abi_header":    "glassbox/backend/hardware/esp/harness/gb_target.h"
+            },
+            "hint":        "<short remediation paragraph>",
+            "next_action": "list_hardware_targets"
+          }
+
+      When you see error_code=no_targets:
+        - If the repo plausibly contains crypto/auth/parser/comparison
+          code, follow Branch B in list_hardware_targets's description:
+          read the files, register_synthetic_target each candidate, retry.
+        - If the repo is OUT OF SCOPE (game, web app, UI library, etc.),
+          follow Branch C: tell the user it's not applicable to GlassBox.
+          DO NOT recommend they add gb_target_call themselves -- that
+          recommendation is FORBIDDEN.
     handler: "start_hardware_audit"
     input_schema:
       properties:
