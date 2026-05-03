@@ -40,8 +40,10 @@ except Exception:                                                # pragma: no co
 # -----------------------------------------------------------------------------
 
 # Sketch directory the Arduino IDE / arduino-cli expects.
+# auto_flash.py lives at backend/hardware/, and the ESP harness sketch is
+# its sibling at backend/hardware/esp/harness/.
 _HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_SKETCH_DIR = os.path.normpath(os.path.join(_HERE, "..", "esp", "harness"))
+DEFAULT_SKETCH_DIR = os.path.normpath(os.path.join(_HERE, "esp", "harness"))
 
 # Default board for the ESP32 victim
 DEFAULT_FQBN = "esp32:esp32:esp32"
