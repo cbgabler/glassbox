@@ -1,7 +1,6 @@
 import { useState } from "react"
 import { useNavigate, Link } from "react-router-dom"
-import { startAudit } from "@/lib/api"
-import { Shield, Loader2, ArrowRight, ArrowLeft, Target, Database } from "lucide-react"
+import { Loader2, ArrowRight, ArrowLeft, Target, Database } from "lucide-react"
 import { motion } from "framer-motion"
 
 export function InitiatePage() {
@@ -23,15 +22,9 @@ export function InitiatePage() {
     }
 
     setIsSubmitting(true)
-    try {
-      const response = await startAudit(repoUrl)
-      // Navigate to the dashboard with the newly minted runId
-      navigate(`/audit/${response.run_id}`)
-    } catch (err) {
-      console.error(err)
-      setError("Failed to initiate. Ensure the repository exists and is accessible.")
-      setIsSubmitting(false)
-    }
+    // Navigate directly to dashboard with repo URL encoded in the route
+    const encodedUrl = encodeURIComponent(repoUrl)
+    navigate(`/audit?repo=${encodedUrl}`)
   }
 
   return (

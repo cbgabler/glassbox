@@ -1,69 +1,164 @@
-import { useState, useEffect } from "react"
-import { useParams } from "react-router-dom"
-import ReactMarkdown from "react-markdown"
-import remarkGfm from "remark-gfm"
-import { fetchSnippets } from "@/lib/api"
-import { Loader2 } from "lucide-react"
-import { motion } from "framer-motion"
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter"
-import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism"
+import { useState, useRef, useEffect } from "react"
+import { useSearchParams, Link, useNavigate } from "react-router-dom"
+import { FileTree } from "@/components/FileTree"
+import { ChatPanel } from "@/components/ChatPanel"
+import { sendChatPrompt, ParsedResponse, RepoTreeResponse } from "@/lib/api"
+import { CheckCircle2, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, GripVertical } from "lucide-react"
+import { Panel, Group as PanelGroup, Separator as PanelResizeHandle, PanelImperativeHandle } from "react-resizable-panels"
 
-export function SnippetViewer() {
-  const { runId } = useParams()
-  const [markdown, setMarkdown] = useState<string | null>(null)
+export function AuditDashboard() {
+  const [searchParams] = useSearchParams()
+  const repoUrl = decodeURIComponent(searchParams.get("repo") || "")
+  const navigate = useNavigate()
 
-  useEffect(() => {
-    if (runId) {
-      fetchSnippets(runId).then(setMarkdown)
-    }
-  }, [runId])
+  const [isGenerating, setIsGenerating] = useState(false)
 
-  if (!markdown) {
-    return (
-      <div className="flex justify-center items-center h-full">
-        <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
-      </div>
-    )
+  // Parsed panel state — lifted up so all three columns share it
+  const [repoTrees,   setRepoTrees]   = useState<RepoTreeResponse[]>([])
+  const [codeBlocks,  setCodeBlocks]  = useState<string[]>([])
+
+  const handleRepoParsed = (parsed: ParsedResponse) => {
+    console.debug('[AuditDashboard] handleRepoParsed', parsed.repo)
+    setRepoTrees(prev => [...prev, ...parsed.repo])
+  }
+  const handleCodeParsed = (parsed: ParsedResponse) => {
+    console.debug('[AuditDashboard] handleCodeParsed', parsed.code)
+    setCodeBlocks(prev => [...prev, ...parsed.code])
   }
 
+  // Auto-analyze on load
+  useEffect(() => {
+    if (!repoUrl) { navigate("/initiate"); return }
+
+    const run = async () => {
+      setIsGenerating(true)
+      try {
+        const parsed = await sendChatPrompt(
+          `Perform a comprehensive security audit of this repository: ${repoUrl}`
+        )
+        console.debug('[AuditDashboard] auto-analyze parsed', parsed)
+        if (parsed.repo.length  > 0) setRepoTrees(parsed.repo)
+        if (parsed.code.length  > 0) setCodeBlocks(parsed.code)
+      } catch (err) {
+        console.error("Analysis failed:", err)
+      } finally {
+        setIsGenerating(false)
+      }
+    }
+
+    run()
+  }, [repoUrl, navigate])
+
+  const leftPanelRef  = useRef<PanelImperativeHandle>(null)
+  const rightPanelRef = useRef<PanelImperativeHandle>(null)
+  const [isLeftCollapsed,  setIsLeftCollapsed]  = useState(false)
+  const [isRightCollapsed, setIsRightCollapsed] = useState(false)
+
+  const toggleLeft  = () => { const p = leftPanelRef.current;  if (p) p.isCollapsed() ? p.expand() : p.collapse() }
+  const toggleRight = () => { const p = rightPanelRef.current; if (p) p.isCollapsed() ? p.expand() : p.collapse() }
+
   return (
-    <motion.div 
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.5, ease: "easeOut" }}
-      className="flex flex-col gap-6 max-w-4xl mx-auto w-full"
-    >
-      <div className="bg-card/40 backdrop-blur-xl border border-white/5 rounded-xl p-8 shadow-2xl overflow-x-auto relative ring-1 ring-white/5">
-        {/* Subtle top glare */}
-        <div className="absolute top-0 inset-x-0 h-px bg-gradient-to-r from-transparent via-white/10 to-transparent" />
-        
-        <div className="prose prose-invert max-w-none prose-headings:tracking-tight prose-headings:font-semibold prose-h1:text-3xl prose-h1:text-emerald-400 prose-a:text-indigo-400 prose-p:text-muted-foreground prose-strong:text-foreground">
-          <ReactMarkdown 
-            remarkPlugins={[remarkGfm]}
-            components={{
-              code({node, inline, className, children, ...props}: any) {
-                const match = /language-(\w+)/.exec(className || '')
-                return !inline && match ? (
-                  <SyntaxHighlighter
-                    {...props}
-                    children={String(children).replace(/\n$/, '')}
-                    style={vscDarkPlus}
-                    language={match[1]}
-                    PreTag="div"
-                    className="rounded-lg border border-white/10 !bg-[#000000] !p-4 !my-6 text-[13px] font-mono shadow-inner"
-                  />
-                ) : (
-                  <code {...props} className={`${className} bg-white/5 border border-white/10 px-1.5 py-0.5 rounded-md text-emerald-300 font-mono text-[0.85em]`}>
-                    {children}
-                  </code>
-                )
-              }
-            }}
-          >
-            {markdown}
-          </ReactMarkdown>
-        </div>
-      </div>
-    </motion.div>
+    <div className="h-screen w-full bg-background text-foreground overflow-hidden font-sans bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]">
+      <PanelGroup orientation="horizontal">
+
+        {/* Column 1: Repository Structure */}
+        <Panel
+          panelRef={leftPanelRef}
+          defaultSize={20}
+          minSize={15}
+          collapsible={true}
+          collapsedSize={0}
+          onResize={() => { if (leftPanelRef.current) setIsLeftCollapsed(leftPanelRef.current.isCollapsed()) }}
+          className="flex flex-col bg-card/50"
+        >
+          <div className="p-4 border-b border-border">
+            <Link to="/" className="font-semibold text-lg tracking-tight text-primary hover:text-emerald-400 transition-colors">GlassBox</Link>
+            <p className="text-xs text-muted-foreground mt-1 flex items-center gap-1 truncate">
+              <span>Repo:</span>
+              <span className="font-mono text-emerald-500 truncate" title={repoUrl}>{repoUrl}</span>
+            </p>
+          </div>
+          <div className="flex-1 overflow-y-auto">
+            {/* FileTree now receives parsed RepoTreeResponse data directly */}
+            <FileTree repoTrees={repoTrees} isLoading={isGenerating && repoTrees.length === 0} />
+          </div>
+          <div className="p-4 border-t border-border shrink-0 bg-background/50 backdrop-blur-md">
+            <button
+              onClick={() => navigate("/")}
+              className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-md transition-all shadow-[0_0_15px_rgba(16,185,129,0.2)] hover:shadow-[0_0_25px_rgba(16,185,129,0.3)] flex items-center justify-center gap-2 text-sm font-medium active:scale-95"
+            >
+              <CheckCircle2 className="w-4 h-4" />
+              Done
+            </button>
+          </div>
+        </Panel>
+
+        <PanelResizeHandle className="w-1.5 bg-white/5 backdrop-blur-sm border-x border-white/5 hover:bg-emerald-500/20 hover:border-emerald-500/30 transition-all cursor-col-resize flex flex-col justify-center items-center group relative z-50 shadow-[0_0_10px_rgba(0,0,0,0.5)]">
+          <div className="absolute inset-y-0 -left-2 -right-2 z-10" />
+          <GripVertical className="w-3 h-6 text-muted-foreground group-hover:text-emerald-400 opacity-0 group-hover:opacity-100 transition-opacity" />
+        </PanelResizeHandle>
+
+        {/* Column 2: Code / Snippet Viewer */}
+        <Panel defaultSize={55} minSize={30} className="flex flex-col min-w-0 bg-[#050505]/80 backdrop-blur-md relative shadow-inner border-x border-white/5">
+          <div className="flex items-center justify-between p-2 border-b border-white/5 bg-background/50 backdrop-blur-md shrink-0 relative z-20">
+            <button onClick={toggleLeft} className="p-1.5 hover:bg-white/10 rounded-md text-muted-foreground hover:text-foreground transition-colors" title="Toggle File Tree">
+              {isLeftCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
+            </button>
+            <div className="flex items-center gap-4">
+              <span className="text-xs font-semibold text-foreground uppercase tracking-widest">Triage Workspace</span>
+              <div className="hidden sm:flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-[10px] font-medium text-emerald-400 uppercase tracking-wider">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                HW Connected
+              </div>
+            </div>
+            <button onClick={toggleRight} className="p-1.5 hover:bg-white/10 rounded-md text-muted-foreground hover:text-foreground transition-colors" title="Toggle Chat">
+              {isRightCollapsed ? <PanelRightOpen className="w-4 h-4" /> : <PanelRightClose className="w-4 h-4" />}
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            {codeBlocks.length === 0 ? (
+              <div className="flex h-full min-h-48 items-center justify-center rounded-xl border border-dashed border-white/10 bg-white/5 text-sm text-muted-foreground">
+                Waiting for code snippets...
+              </div>
+            ) : (
+              codeBlocks.map((snippet, index) => (
+                <pre
+                  key={index}
+                  className="overflow-x-auto rounded-xl border border-emerald-500/15 bg-black/80 p-4 text-sm leading-relaxed text-emerald-100 shadow-inner"
+                >
+                  <code>{snippet}</code>
+                </pre>
+              ))
+            )}
+          </div>
+          
+        </Panel>
+
+        <PanelResizeHandle className="w-1.5 bg-white/5 backdrop-blur-sm border-x border-white/5 hover:bg-emerald-500/20 hover:border-emerald-500/30 transition-all cursor-col-resize flex flex-col justify-center items-center group relative z-50 shadow-[0_0_10px_rgba(0,0,0,0.5)]">
+          <div className="absolute inset-y-0 -left-2 -right-2 z-10" />
+          <GripVertical className="w-3 h-6 text-muted-foreground group-hover:text-emerald-400 opacity-0 group-hover:opacity-100 transition-opacity" />
+        </PanelResizeHandle>
+
+        {/* Column 3: Chat */}
+        <Panel
+          panelRef={rightPanelRef}
+          defaultSize={25}
+          minSize={20}
+          collapsible={true}
+          collapsedSize={0}
+          onResize={() => { if (rightPanelRef.current) setIsRightCollapsed(rightPanelRef.current.isCollapsed()) }}
+          className="flex flex-col bg-card/50 shadow-xl z-10"
+        >
+          <div className="flex-1 overflow-y-auto flex flex-col h-full">
+            <ChatPanel
+              isGenerating={isGenerating}
+              onRepoParsed={handleRepoParsed}
+              onCodeParsed={handleCodeParsed}
+            />
+          </div>
+        </Panel>
+
+      </PanelGroup>
+    </div>
   )
 }

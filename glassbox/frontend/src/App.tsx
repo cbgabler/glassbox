@@ -9,7 +9,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<LandingPage />} />
         <Route path="/initiate" element={<InitiatePage />} />
-        <Route path="/audit/:runId" element={<AuditDashboard />} />
+        <Route path="/audit" element={<AuditDashboard />} />
       </Routes>
     </BrowserRouter>
   )
