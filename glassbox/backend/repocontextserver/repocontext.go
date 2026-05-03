@@ -197,6 +197,12 @@ func handleGetRepoContext(w http.ResponseWriter, r *http.Request) {
 	}
 	repoRoot := runsDir
 
+	entries, _ := os.ReadDir(repoRoot)
+	if len(entries) == 0 && req.FilePath != "" {
+		http.Error(w, "No repository available. Clone a repository first before reading files.", http.StatusBadRequest)
+		return
+	}
+
 	// If nothing cloned yet, allow cloning via git_url or path
 	if entries, _ := os.ReadDir(repoRoot); len(entries) == 0 {
 		if req.GitURL == "" && req.Path == "" {
@@ -284,9 +290,28 @@ func createRunWorkspace() (string, string, string, error) {
 // findExistingRunBySource removed in simplified flow
 
 func resolveRunsDir() (string, error) {
-	// Use a fixed directory for cloned repos to simplify local development.
-	fixed := `C:\Users\antho\glassbox2\glassbox2\glassbox\backend\clonedrepos`
-	return filepath.Clean(fixed), nil
+	// Where cloned repos live. Resolution order:
+	//   1. CLONEDREPOS_DIR env var (operator override)
+	//   2. <glassbox_root>/glassbox/backend/clonedrepos (cross-platform default)
+	//   3. <cwd>/clonedrepos as a last resort
+	if v := strings.TrimSpace(os.Getenv("CLONEDREPOS_DIR")); v != "" {
+		abs, err := filepath.Abs(v)
+		if err == nil {
+			return filepath.Clean(abs), nil
+		}
+	}
+	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err == nil {
+		root := strings.TrimSpace(string(out))
+		if root != "" {
+			return filepath.Clean(filepath.Join(root, "glassbox", "backend", "clonedrepos")), nil
+		}
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(filepath.Join(cwd, "clonedrepos")), nil
 }
 
 func cloneGitRepo(repoRoot, gitURL, branch string) error {
@@ -420,10 +445,11 @@ func buildRepoTree(req RepoContextRequest, runRoot, repoRoot string) (RepoTreeRe
 	}
 	maxDepth := req.MaxDepth
 	if maxDepth <= 0 {
-		maxDepth = 3
+		maxDepth = 4 // was 3
 	}
 
-	entries := make([]RepoEntry, 0, min(maxEntries, 256))
+	entries := make([]RepoEntry, 0, min(maxEntries, 512)) // was 256
+
 	total := 0
 	truncated := false
 
@@ -576,11 +602,4 @@ func writeJSON(w http.ResponseWriter, statusCode int, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
 	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

@@ -1,6 +1,5 @@
-import { useState, useEffect } from "react"
-import { useParams } from "react-router-dom"
-import { fetchRepoStructure, FileNode } from "@/lib/api"
+import { useState } from "react"
+import { FileNode, buildFileTree, RepoTreeResponse } from "@/lib/api"
 import { Loader2, ChevronRight, ChevronDown, FileText, Folder, AlertCircle, AlertTriangle } from "lucide-react"
 
 function TreeNode({ node, depth = 0 }: { node: FileNode; depth?: number }) {
@@ -9,31 +8,35 @@ function TreeNode({ node, depth = 0 }: { node: FileNode; depth?: number }) {
 
   return (
     <div className="flex flex-col">
-      <div 
+      <div
         className={`flex items-center gap-1.5 py-1.5 px-2 hover:bg-white/5 rounded-md cursor-pointer text-sm transition-colors ${
-          node.status === 'vulnerable' ? 'text-red-400 bg-red-500/5' : 
-          node.status === 'warning' ? 'text-amber-400 bg-amber-500/5' : 
-          'text-foreground/80 hover:text-foreground'
+          node.status === "vulnerable" ? "text-red-400 bg-red-500/5" :
+          node.status === "warning"    ? "text-amber-400 bg-amber-500/5" :
+          "text-foreground/80 hover:text-foreground"
         }`}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
         onClick={() => isFolder && setIsOpen(!isOpen)}
       >
         <div className="w-4 h-4 flex items-center justify-center shrink-0">
-          {isFolder ? (
-            isOpen ? <ChevronDown className="w-3 h-3 text-muted-foreground" /> : <ChevronRight className="w-3 h-3 text-muted-foreground" />
-          ) : (
-            <div className="w-3" />
-          )}
+          {isFolder
+            ? isOpen
+              ? <ChevronDown className="w-3 h-3 text-muted-foreground" />
+              : <ChevronRight className="w-3 h-3 text-muted-foreground" />
+            : <div className="w-3" />
+          }
         </div>
-        
-        {isFolder ? <Folder className="w-4 h-4 text-blue-400 shrink-0 fill-blue-400/20" /> : <FileText className="w-4 h-4 text-emerald-400 shrink-0" />}
-        
+
+        {isFolder
+          ? <Folder className="w-4 h-4 text-blue-400 shrink-0 fill-blue-400/20" />
+          : <FileText className="w-4 h-4 text-emerald-400 shrink-0" />
+        }
+
         <span className="truncate font-medium">{node.name}</span>
-        
-        {node.status === 'vulnerable' && <AlertCircle className="w-3.5 h-3.5 text-red-500 shrink-0 ml-auto" />}
-        {node.status === 'warning' && <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0 ml-auto" />}
+
+        {node.status === "vulnerable" && <AlertCircle className="w-3.5 h-3.5 text-red-500 shrink-0 ml-auto" />}
+        {node.status === "warning"    && <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0 ml-auto" />}
       </div>
-      
+
       {node.vulnDescription && (
         <div className="text-[10px] text-muted-foreground px-2 py-0.5 ml-8 border-l border-red-500/30 font-mono">
           {node.vulnDescription}
@@ -51,23 +54,32 @@ function TreeNode({ node, depth = 0 }: { node: FileNode; depth?: number }) {
   )
 }
 
-export function FileTree() {
-  const { runId } = useParams()
-  const [nodes, setNodes] = useState<FileNode[] | null>(null)
+interface FileTreeProps {
+  repoTrees?: RepoTreeResponse[];  // from parsed <<repo>> blocks
+  isLoading?: boolean;
+}
 
-  useEffect(() => {
-    if (runId) {
-      fetchRepoStructure(runId).then(setNodes)
-    }
-  }, [runId])
-
-  if (!nodes) {
+export function FileTree({ repoTrees = [], isLoading }: FileTreeProps) {
+  // Diagnostic log to show when repoTrees updates
+  console.debug('[FileTree] repoTrees count=', repoTrees.length)
+  if (isLoading) {
     return (
       <div className="flex justify-center items-center h-48">
         <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
       </div>
     )
   }
+
+  if (!repoTrees.length) {
+    return (
+      <div className="flex justify-center items-center h-48 text-muted-foreground text-sm">
+        No repository data yet
+      </div>
+    )
+  }
+
+  // Flatten all repo blocks into one unified tree (typically just one)
+  const nodes = repoTrees.flatMap(tree => buildFileTree(tree))
 
   return (
     <div className="p-3 overflow-y-auto flex flex-col gap-0.5">

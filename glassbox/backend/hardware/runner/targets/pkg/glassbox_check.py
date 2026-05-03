@@ -11,32 +11,33 @@ Supported (hardware-runnable) file types:
     .rs                                  -> generate Cargo + C++ shim scaffold
     .zig                                 -> generate build.zig + C++ shim
 
-Anything else (.py, .js, .ts, .rb, ...) is INTENTIONALLY rejected: those
-files do not run on the ESP32 and a host-side static analyzer for them
-lives in a separate tool, not here. That keeps this command honest about
-what it does -- "if it ran on the hardware, here is what GlassBox saw."
+Anything else (.py, .js, .ts, .rb, ...) is INTENTIONALLY rejected.
 
-What this command does, given a hardware-runnable source file:
+Pipeline stages (each can be turned on individually, or all at once with --auto):
 
-  1. Validate the source against the harness ABI (gb_target_call /
-     gb_target_name with C linkage).
-  2. For C/C++: run the pre-flash constant-time linter (`ct_lint.py`)
-     so leaky patterns are flagged BEFORE you waste a flash cycle.
-  3. With --install-target: copy / scaffold the source into
-     esp/harness/gb_target.cpp so the next Arduino-IDE flash picks it up.
-  4. Emit a v2 run_detail.json with whatever findings already fired
-     (currently just `static` from the linter; hardware-side findings
-     come from the existing sweep / eval pipeline once the user flashes
-     and sweeps).
-  5. Exit non-zero if any HIGH or CRITICAL finding fired, so this drops
-     into a CI step.
+  Stage 1  install_target  drop the file into esp/harness/gb_target.cpp
+                           (also handles asm/rust/zig FFI scaffolding)
+  Stage 2  ct_lint         pre-flash constant-time linter (C/C++ only)
+  Stage 3  flash           arduino-cli or platformio compile + upload to ESP32
+  Stage 4  verify          open the Pico, confirm the new firmware is alive
+  Stage 5  sweep+eval      collect traces and run TVLA + CPA + ML over them,
+                           merging all findings into a single run_detail.json
+
+Flags:
+
+  (none)              --> stage 2 only (lint), write run_detail.json
+  --install-target    --> stages 1 + 2
+  --flash             --> stages 1 + 2 + 3 + 4 (--install-target implied)
+  --sweep             --> stages 1 + 2 + 3 + 4 + 5 (everything)
+  --auto              --> alias for --sweep (the default "do everything" mode)
 
 Usage:
 
-    python glassbox_check.py path/to/myfunc.cpp                # lint only
-    python glassbox_check.py path/to/myfunc.cpp --install-target  # also drop into harness
-    python glassbox_check.py path/to/myfunc.rs --install-target --name my_target
-    python glassbox_check.py myfunc.py                         # rejected with a clear message
+    python glassbox_check.py myfunc.cpp                  # lint only
+    python glassbox_check.py myfunc.cpp --install-target # lint + drop in
+    python glassbox_check.py myfunc.cpp --flash          # also flash + verify
+    python glassbox_check.py myfunc.cpp --auto           # full pipeline
+    python glassbox_check.py myfunc.py                   # rejected with a clear message
 """
 from __future__ import annotations
 
@@ -44,11 +45,16 @@ import argparse
 import datetime as _dt
 import json
 import os
+import shlex
+import subprocess
 import sys
 from typing import Any, Dict, List, Optional
 
 import findings as fmod
 import compile_target
+
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def _now_iso() -> str:
@@ -64,8 +70,7 @@ def _slug_from_path(path: str) -> str:
     return f"check_{base}_{ts}"
 
 
-# Extensions the ESP32 hardware path can actually handle (C/C++ natively, the
-# rest via compile_target.py's FFI scaffolding for PlatformIO builds).
+# Extensions the ESP32 hardware path can actually handle.
 SUPPORTED_EXTS = set(compile_target.LANG_BY_EXT.keys())
 
 
@@ -84,11 +89,7 @@ def _run_ct_lint(path: str, id_offset: int = 0) -> List[fmod.Finding]:
 
 def install_to_harness(path: str, *, name: str = "my_target",
                        force: bool = False) -> int:
-    """Drop a single hardware-runnable source file into the ESP32 harness slot.
-
-    Returns 0 on success, non-zero if the file fails the ABI check.
-    Does not flash the firmware -- that's still a manual Arduino-IDE step.
-    """
+    """Drop a single hardware-runnable source file into the ESP32 harness slot."""
     lang = compile_target.detect_language(path)
     target = compile_target.DEFAULT_HARNESS_TARGET
     if lang in ("c", "cpp"):
@@ -102,6 +103,56 @@ def install_to_harness(path: str, *, name: str = "my_target",
     print(f"glassbox check: cannot install {lang!r} into harness yet.")
     return 2
 
+
+# -----------------------------------------------------------------------------
+# Stage 5: sweep + eval (subprocess into eval.py for clean process isolation)
+# -----------------------------------------------------------------------------
+
+def run_sweep_and_eval(*, pico_port: str,
+                       run_detail_out: str,
+                       lint_path: Optional[str],
+                       campaign: str = "random_vs_zero",
+                       secret_len: int = 16,
+                       n_per_group: int = 500,
+                       run_cpa: bool = False,
+                       cpa_true_key: Optional[str] = None,
+                       extra_args: Optional[List[str]] = None) -> int:
+    """Drive eval.py to collect a fresh campaign + TVLA + CPA + ML + write JSON.
+
+    eval.py with --port runs collect+analyze in one shot, including reading
+    crash / non-determinism / length-oracle findings out of sweep_target's
+    module-level state. Subprocess (instead of import) means we get clean
+    cleanup of the serial handle and a fresh process per file when scanning
+    a whole repo.
+    """
+    cmd = [
+        sys.executable, os.path.join(_HERE, "eval.py"),
+        "--port", pico_port,
+        "--campaign", campaign,
+        "--secret-len", str(secret_len),
+        "--n-per-group", str(n_per_group),
+        "--run-detail", run_detail_out,
+    ]
+    if lint_path:
+        cmd += ["--lint", lint_path]
+    if run_cpa:
+        cmd.append("--cpa")
+    if cpa_true_key:
+        cmd += ["--cpa-true-key", cpa_true_key]
+    if extra_args:
+        cmd += extra_args
+
+    print(f"[glassbox check] sweep+eval: {' '.join(shlex.quote(c) for c in cmd)}")
+    try:
+        rc = subprocess.run(cmd, check=False).returncode
+    except KeyboardInterrupt:                                   # pragma: no cover
+        return 130
+    return rc
+
+
+# -----------------------------------------------------------------------------
+# Reporting
+# -----------------------------------------------------------------------------
 
 def _print_human_summary(findings: List[fmod.Finding],
                          path: str,
@@ -137,7 +188,12 @@ def emit_run_detail(out_path: str, *,
                     run_id: str,
                     target: str,
                     findings: List[fmod.Finding]) -> None:
-    """Write a v2 run_detail.json with the hardware-prep scan's results."""
+    """Write a v2 run_detail.json with the (lint-only) scan's results.
+
+    NOTE: When --flash --sweep is used, eval.py overwrites this file with
+    the full TVLA + CPA + lint payload. This function is for the lint-only
+    path where we never reach the hardware.
+    """
     summary = fmod.summarize(findings)
     payload: Dict[str, Any] = {
         "schema_version": 2,
@@ -165,11 +221,10 @@ def main():
     ap = argparse.ArgumentParser(
         prog="glassbox check",
         description=(
-            "Pre-flash check for hardware-runnable source files. "
-            "Validates the gb_target_call ABI, runs the constant-time linter, "
-            "and (with --install-target) drops the file into the ESP32 harness "
-            "slot so the next flash picks it up. "
-            "Files that don't run on the hardware (.py, .js, ...) are rejected."
+            "Pre-flash + flash + sweep + eval pipeline for hardware-runnable "
+            "source files. Stages can be turned on individually with "
+            "--install-target / --flash / --sweep, or all at once with --auto. "
+            "Files that don't run on the ESP32 (.py, .js, ...) are rejected."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -182,17 +237,66 @@ def main():
     ap.add_argument("--json", action="store_true",
                     help="Print findings as JSON to stdout instead of a "
                          "human summary.")
+
+    # Stage selectors.
     ap.add_argument("--install-target", action="store_true",
-                    help="Also drop the source into esp/harness/gb_target.cpp "
-                         "(C/C++ direct, asm/rust/zig via FFI shim) so the "
-                         "next flash picks it up.")
+                    help="Drop the source into esp/harness/gb_target.cpp.")
+    ap.add_argument("--flash", action="store_true",
+                    help="Also compile + upload the harness to the ESP32 "
+                         "(implies --install-target).")
+    ap.add_argument("--sweep", action="store_true",
+                    help="Also collect traces and run TVLA + CPA + ML through "
+                         "eval.py (implies --flash, requires the Pico to be "
+                         "connected).")
+    ap.add_argument("--auto", action="store_true",
+                    help="Shortcut: --install-target + --flash + --sweep "
+                         "(end-to-end pipeline).")
+
+    # Install knobs.
     ap.add_argument("--name", default="my_target",
                     help="Symbol name for Rust/Zig/asm targets (used in the "
                          "generated shim and as gb_target_name()'s return value).")
     ap.add_argument("-f", "--force", action="store_true",
                     help="Overwrite existing harness target file.")
+
+    # Flash knobs.
+    ap.add_argument("--esp-port", default=None,
+                    help="ESP32 serial port for flashing (auto-detected by "
+                         "USB VID:PID if omitted).")
+    ap.add_argument("--pico-port", default=None,
+                    help="Pico serial port for sweep + verification "
+                         "(auto-detected if omitted).")
+    ap.add_argument("--fqbn", default=None,
+                    help="Override arduino-cli FQBN (default: esp32:esp32:esp32).")
+    ap.add_argument("--toolchain", default=None,
+                    choices=["arduino-cli", "platformio"],
+                    help="Force a specific flashing toolchain.")
+    ap.add_argument("--no-verify", action="store_true",
+                    help="Skip the post-flash 'is harness alive?' check.")
+    ap.add_argument("--via-pico", dest="via_pico", action="store_true",
+                    default=None,
+                    help="Force bridged flashing through the Pico (Route A: "
+                         "only the Pico USB cable is plugged in). Default: "
+                         "auto-detect.")
+    ap.add_argument("--no-via-pico", dest="via_pico", action="store_false",
+                    help="Refuse to bridge -- require a directly-attached "
+                         "ESP32 USB port.")
+
+    # Sweep knobs (forwarded to eval.py).
+    ap.add_argument("--campaign", default="random_vs_zero",
+                    help="Input distribution for the sweep (default: %(default)s).")
+    ap.add_argument("--secret-len", type=int, default=16,
+                    help="Secret length in bytes for the sweep (default: %(default)s).")
+    ap.add_argument("--n-per-group", type=int, default=500,
+                    help="Traces per TVLA group (default: %(default)s).")
+    ap.add_argument("--cpa", action="store_true",
+                    help="Run AES-S-box CPA on the collected power traces.")
+    ap.add_argument("--cpa-true-key", default=None,
+                    help="Hex 16-byte key for CPA per-byte rank reporting.")
+
     args = ap.parse_args()
 
+    # --- input validation ---------------------------------------------------
     if not os.path.exists(args.path):
         print(f"glassbox check: {args.path}: no such file", file=sys.stderr)
         sys.exit(2)
@@ -213,14 +317,21 @@ def main():
               file=sys.stderr)
         sys.exit(2)
 
-    # ABI check up front -- never silently install a broken target.
+    # --auto / --sweep / --flash imply earlier stages.
+    if args.auto:
+        args.sweep = True
+    if args.sweep:
+        args.flash = True
+    if args.flash:
+        args.install_target = True
+
+    # --- stage 0: ABI + lint ------------------------------------------------
     lang = compile_target.detect_language(args.path)
     abi_problems: List[str] = []
     if lang in ("c", "cpp"):
         with open(args.path, "r", encoding="utf-8", errors="replace") as fh:
             abi_problems = compile_target.check_c_abi(fh.read())
 
-    # Pre-flash linter for C/C++ sources.
     findings: List[fmod.Finding] = []
     if lang in ("c", "cpp"):
         findings.extend(_run_ct_lint(args.path, id_offset=len(findings)))
@@ -229,20 +340,99 @@ def main():
     run_id = _slug_from_path(args.path)
     emit_run_detail(out_path, run_id=run_id, target=args.path, findings=findings)
 
+    # --- stage 1: install --------------------------------------------------
     if args.install_target:
         if abi_problems:
             print("glassbox check: refusing to install -- ABI check FAILED:")
             for p in abi_problems:
                 print(f"  - {p}")
-            print("Fix the source so it exposes both required symbols with C "
-                  "linkage, then re-run.")
             sys.exit(1)
         print()
-        print("--- installing into ESP32 harness slot ---")
+        print("--- stage 1: install into ESP32 harness slot ---")
         rc = install_to_harness(args.path, name=args.name, force=args.force)
         if rc != 0:
             sys.exit(rc)
 
+    # --- stage 3 + 4: flash + verify ---------------------------------------
+    if args.flash:
+        try:
+            import auto_flash
+        except Exception as e:
+            print(f"glassbox check: cannot import auto_flash: {e}", file=sys.stderr)
+            sys.exit(1)
+        print()
+        print("--- stage 3: compile + upload to ESP32 ---")
+        flash_kwargs: Dict[str, Any] = {
+            "language":          lang,
+            "esp_port":          args.esp_port,
+            "pico_port":         args.pico_port,
+            "toolchain_override": args.toolchain,
+            "verify":            (not args.no_verify),
+            "via_pico":          args.via_pico,
+        }
+        if args.fqbn:
+            flash_kwargs["fqbn"] = args.fqbn
+        rc = auto_flash.flash_target(**flash_kwargs)
+        if rc != 0:
+            print(f"glassbox check: flash failed (rc={rc})", file=sys.stderr)
+            sys.exit(rc)
+
+    # --- stage 5: sweep + eval ---------------------------------------------
+    if args.sweep:
+        # Pico port detection (eval.py needs an explicit one).
+        pico_port = args.pico_port
+        if pico_port is None:
+            try:
+                import auto_flash
+                pico_port = auto_flash.detect_pico_port()
+            except Exception:
+                pass
+        if pico_port is None:
+            print("glassbox check: cannot find the Pico port for sweep. "
+                  "Pass --pico-port /dev/<...>.", file=sys.stderr)
+            sys.exit(1)
+        print()
+        print("--- stage 5: sweep + eval ---")
+        rc = run_sweep_and_eval(
+            pico_port=pico_port,
+            run_detail_out=out_path,
+            lint_path=args.path,
+            campaign=args.campaign,
+            secret_len=args.secret_len,
+            n_per_group=args.n_per_group,
+            run_cpa=args.cpa,
+            cpa_true_key=args.cpa_true_key,
+        )
+        if rc not in (0, 1):
+            # eval.py exits 1 when leakage is found (still valid output);
+            # any other non-zero is a real failure.
+            print(f"glassbox check: sweep+eval failed (rc={rc})", file=sys.stderr)
+            sys.exit(rc)
+
+    # --- final report -------------------------------------------------------
+    if args.sweep and os.path.isfile(out_path):
+        # eval.py wrote the authoritative run_detail.json; reload it for
+        # the headline.
+        try:
+            doc = json.load(open(out_path))
+            print()
+            print("=" * 72)
+            print(f"GlassBox check (full pipeline): {args.path}")
+            print(f"  Wrote:           {out_path}")
+            print(f"  Verdict:         {doc.get('verdict', '?')}")
+            fs = doc.get("findings_summary", {})
+            print(f"  Worst severity:  {fs.get('worst_severity', '?')}")
+            print(f"  Findings total:  {fs.get('total', '?')}")
+            print(f"  By severity:     {fs.get('by_severity', {})}")
+        except Exception as e:
+            print(f"glassbox check: could not parse final run_detail.json: {e}",
+                  file=sys.stderr)
+        # eval.py's exit code already reflects leak/no-leak; mirror it via
+        # findings_summary instead.
+        sev = (doc.get("findings_summary") or {}).get("worst_severity", "pass")
+        sys.exit(1 if sev in ("CRITICAL", "HIGH") else 0)
+
+    # Pre-hardware-only path: print the lint summary.
     if args.json:
         print(json.dumps([f.to_dict() for f in findings], indent=2))
     else:
@@ -252,7 +442,6 @@ def main():
             print("Note: ABI check would FAIL (use --install-target to see details):")
             for p in abi_problems:
                 print(f"  - {p}")
-
     has_blocking = any(f.severity in ("CRITICAL", "HIGH") for f in findings)
     sys.exit(1 if has_blocking else 0)
 
