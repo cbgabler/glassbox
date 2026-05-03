@@ -6,6 +6,8 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	agent "github.com/AnthonyL103/GOMCP/Agent"
@@ -46,12 +48,56 @@ func buildcommand(config *server.RuntimeConfig) (string, []string, error) {
 			// Treat as module
 			args = append([]string{"-m"}, args...)
 		}
-		return cmd, args, nil
+		return resolvePythonCommand(cmd), args, nil
 
 	default:
 		// For node/ruby/etc., assume config.command + config.args is already executable form
 		return cmd, args, nil
 	}
+}
+
+func resolvePythonCommand(cmd string) string {
+	clean := strings.TrimSpace(cmd)
+	if clean == "" {
+		return clean
+	}
+
+	// If command exists as-is, keep it.
+	if _, err := os.Stat(clean); err == nil {
+		return clean
+	}
+
+	// Try normalized separators for local relative paths.
+	if strings.Contains(clean, `\`) || strings.Contains(clean, `/`) {
+		normalized := filepath.Clean(strings.ReplaceAll(clean, `\`, string(filepath.Separator)))
+		if _, err := os.Stat(normalized); err == nil {
+			return normalized
+		}
+	}
+
+	// Special-case common venv python layout differences:
+	// Windows: venv\Scripts\python.exe
+	// Unix:    venv/bin/python
+	lower := strings.ToLower(clean)
+	if strings.Contains(lower, "venv") && strings.Contains(lower, "python") {
+		candidates := []string{
+			filepath.Clean(strings.ReplaceAll(clean, `\Scripts\python.exe`, `/bin/python`)),
+			filepath.Clean(strings.ReplaceAll(clean, `/Scripts/python.exe`, `/bin/python`)),
+			filepath.Clean(strings.ReplaceAll(clean, `\bin\python`, `/Scripts/python.exe`)),
+			filepath.Clean(strings.ReplaceAll(clean, `/bin/python`, `/Scripts/python.exe`)),
+		}
+		for _, c := range candidates {
+			if _, err := os.Stat(c); err == nil {
+				return c
+			}
+		}
+	}
+
+	// As a final fallback, use common python executables by OS.
+	if runtime.GOOS == "windows" {
+		return "python"
+	}
+	return "python3"
 }
 
 // StartServer launches a server process and returns the process handle
