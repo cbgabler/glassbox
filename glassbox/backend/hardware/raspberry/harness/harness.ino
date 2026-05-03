@@ -1,28 +1,45 @@
-// ESP32 victim harness for GlassBox.
+// Pico monitor harness for GlassBox.
 //
-// Protocol over UART2 (Pico <-> ESP32):
-//   Pico  -> ESP32:  "RUN <fn_id> <hex_input>\n"
-//   ESP32 -> Pico:   "RES2 <cycles> <micros> <insns> <branches> <hex_output>\n"
+// Bridges USB CDC (laptop runner <-> Pico) and UART0 (Pico <-> ESP32),
+// captures a 256-sample power trace from the INA169 ADC during the
+// timed window the ESP32 marks with its trigger pin, and is the active
+// enforcement boundary that drives the kill lines on `EN` and `GPIO0`.
 //
-// The RES2 protocol replaces the older RES line and ships four timing/HPC
-// channels per call instead of one:
-//   cycles    Xtensa CCOUNT delta (fine-grained, deterministic)
-//   micros    esp_timer_get_time() delta (catches interrupt / system noise)
-//   insns     instructions retired delta from PMU counter PM0 (best-effort)
-//   branches  branches taken delta from PMU counter PM1 (best-effort)
+// USB CDC commands (laptop -> Pico):
+//   "RUN <fn_id> <hex_input>\n"   -- forward to ESP32, capture trace
+//   "QUARANTINE\n"                -- soft-quarantine ESP32 (NVS flag) +
+//                                    fire kill lines (open-drain on EN/GPIO0)
+//   "UNQUARANTINE\n"              -- clear the NVS flag (operator escape hatch)
+//   "STATUS\n"                    -- ask Pico+ESP32 for combined status
+//   "BRIDGE [seconds]\n"          -- v3: enter transparent USB<->UART0
+//                                   passthrough so esptool / arduino-cli
+//                                   can flash the ESP32 through this Pico.
+//                                   Auto-exits after `seconds` (default 90)
+//                                   or when DTR drops after the upload.
 //
-// PMU values may read 0 if the LX6 event codes below don't match this exact
-// silicon revision; the runner treats a flat-line PMU channel as "no signal"
-// and TVLA on it correctly reports no leak. Cycles + micros always work.
+// USB CDC responses (Pico -> laptop):
+//   "RES2 <cycles> <us> <insns> <branches> <hex_output>\n"
+//   "TRACE <s0,s1,...,s255>\n"
+//   "ACK quarantined\n"   /  "ACK unquarantined\n"
+//   "ACK bridge <seconds>\n"   (entering bridge mode)
+//   "STATUS <state>\n"    -- e.g. "STATUS running" or "STATUS quarantined"
+//   "ERR <reason>\n"
 //
-// Trigger pin GPIO5 is driven HIGH for the duration of the function under test
-// so the Pico can sample the INA169 ADC over exactly that window.
+// Wiring (v3 -- updated for Route A: single-USB flashing through the Pico):
+//   Pico GP0 (UART0 TX) -> ESP32 GPIO3  (U0RXD)   ◀── moved from GPIO16
+//   Pico GP1 (UART0 RX) <- ESP32 GPIO1  (U0TXD)   ◀── moved from GPIO17
+//   Pico GP2            <- ESP32 GPIO5  (trigger INPUT, ESP32 drives)
+//   Pico GP3            -> ESP32 EN     (kill / esptool reset, open-drain)
+//   Pico GP4            -> ESP32 GPIO0  (kill / esptool boot,  open-drain)
+//   Pico GP26 (ADC0)    <- INA169 OUT
+//   Pico GND            <-> ESP32 GND   (REQUIRED)
 //
-// Wiring (per glassbox/README.md, with trigger direction reversed for sampling):
-//   ESP32 GPIO16 (RX2) <- Pico GP0 (TX)
-//   ESP32 GPIO17 (TX2) -> Pico GP1 (RX)
-//   ESP32 GPIO5        -> Pico GP2  (trigger OUTPUT, ESP32 drives)
-//   ESP32 GND          <-> Pico GND
+// Why UART0 on the ESP32 side? Because that's where the ROM bootloader
+// lives. The Pico can pretend to be a CP2102 USB-to-serial chip when the
+// host opens its CDC port and starts toggling DTR/RTS, forwarding bytes
+// onto UART0 and translating the line-state transitions into the EN /
+// GPIO0 reset sequence esptool expects. Net effect: only the Pico USB
+// cable needs to be plugged in for both flashing AND running the harness.
 
 #include <Arduino.h>
 
@@ -70,6 +87,126 @@ static void kill_pin_assert(uint8_t pin) {
   digitalWrite(pin, LOW);              // sink ESP32 line to ground directly
 }
 #endif
+
+// =============================================================================
+// v3 -- BRIDGE mode: pretend to be a CP2102 USB-to-serial chip for esptool.
+// =============================================================================
+//
+// In normal operation the Pico parses RUN/STATUS/QUARANTINE/etc. lines from
+// the USB CDC port and replies with structured RES2/TRACE/ACK lines. When
+// the runner wants to FLASH the ESP32 over this same wire, it sends a
+// "BRIDGE [seconds]\n" command and we switch to a transparent passthrough:
+//
+//   * Every byte from USB CDC is forwarded verbatim onto UART0 (Serial1).
+//   * Every byte from UART0 is forwarded verbatim back to USB CDC.
+//   * Every change in the host's DTR/RTS line state is translated into
+//     EN / GPIO0 GPIO transitions exactly the way a CP2102 dev-board's
+//     auto-reset circuitry would, so esptool's standard reset sequence
+//     drops the ESP32 into download mode.
+//
+// We exit bridge mode in three ways (whichever fires first):
+//   (a) the per-session deadline (default 90 s) elapses,
+//   (b) the host closes the CDC port (DTR drops and stays inactive
+//       for >300 ms after we've seen at least one byte of traffic), or
+//   (c) the user power-cycles the Pico.
+//
+// (a) is the safety net so a half-finished flash can't permanently
+// strand us; (b) is the normal happy path.
+//
+// Polarity: most ESP32 dev boards invert DTR/RTS through transistors so that
+// host_DTR=true -> EN=LOW (chip in reset) and host_RTS=true -> GPIO0=LOW
+// (boot mode). We reproduce that exactly using kill_pin_assert/release
+// (which already encode the FET-vs-direct wiring choice). The two GPIOs
+// drive the ESP32's actual EN and GPIO0 lines, so esptool's reset dance
+// works without any electrical changes -- same wires, new firmware role.
+static bool     g_in_bridge       = false;
+static uint32_t g_bridge_deadline = 0;     // millis() value when bridge auto-exits
+static bool     g_bridge_saw_data = false; // becomes true after first forwarded byte
+static uint32_t g_bridge_dtr_low_since = 0; // millis() when DTR last went inactive
+static bool     g_last_dtr        = false;
+static bool     g_last_rts        = false;
+
+static void bridge_apply_lines(bool dtr, bool rts) {
+  // Mirror the host's reset/boot-mode lines onto the ESP32's EN / GPIO0.
+  // dtr=true  -> EN line LOW  (chip held in reset)
+  // rts=true  -> GPIO0 LOW    (sample at next reset edge -> bootloader)
+  if (dtr) kill_pin_assert(PIN_KILL_EN);
+  else     kill_pin_release(PIN_KILL_EN);
+  if (rts) kill_pin_assert(PIN_KILL_BOOT);
+  else     kill_pin_release(PIN_KILL_BOOT);
+}
+
+static void bridge_enter(uint32_t seconds) {
+  if (seconds < 5)   seconds = 5;
+  if (seconds > 600) seconds = 600;          // bound the safety net
+  g_in_bridge       = true;
+  g_bridge_deadline = millis() + seconds * 1000UL;
+  g_bridge_saw_data = false;
+  g_bridge_dtr_low_since = 0;
+  // Synchronise with whatever line state the host is already presenting.
+  g_last_dtr = Serial.dtr();
+  g_last_rts = Serial.rts();
+  bridge_apply_lines(g_last_dtr, g_last_rts);
+}
+
+static void bridge_exit(const char* reason) {
+  g_in_bridge = false;
+  // Park kill lines in high-Z again -- ESP32's own pull-ups bring it back
+  // up cleanly, and we're ready to handle harness commands once more.
+  kill_pin_release(PIN_KILL_EN);
+  kill_pin_release(PIN_KILL_BOOT);
+  Serial.printf("ACK bridge_exit %s\n", reason);
+}
+
+// Run one slice of the bridge loop. Called from loop() instead of the
+// normal command parser whenever g_in_bridge is true.
+static void bridge_tick() {
+  // 1. Translate any DTR/RTS edge into kill-line GPIO transitions.
+  bool dtr = Serial.dtr();
+  bool rts = Serial.rts();
+  if (dtr != g_last_dtr || rts != g_last_rts) {
+    bridge_apply_lines(dtr, rts);
+    g_last_dtr = dtr;
+    g_last_rts = rts;
+    if (!dtr) {
+      if (g_bridge_dtr_low_since == 0) g_bridge_dtr_low_since = millis();
+    } else {
+      g_bridge_dtr_low_since = 0;
+    }
+  }
+
+  // 2. USB CDC -> UART0  (host bytes onto the wire to the ESP32 bootloader)
+  while (Serial.available()) {
+    int c = Serial.read();
+    if (c < 0) break;
+    Serial1.write((uint8_t)c);
+    g_bridge_saw_data = true;
+  }
+
+  // 3. UART0 -> USB CDC  (ESP32 bootloader replies back to the host)
+  while (Serial1.available()) {
+    int c = Serial1.read();
+    if (c < 0) break;
+    Serial.write((uint8_t)c);
+    g_bridge_saw_data = true;
+  }
+
+  // 4. Exit conditions.
+  uint32_t now = millis();
+  if ((int32_t)(now - g_bridge_deadline) >= 0) {
+    bridge_exit("timeout");
+    return;
+  }
+  // Host closed the port AFTER the upload made any actual progress: DTR has
+  // been inactive for >300 ms and we saw real bytes pass through. Don't
+  // bail just because the host hasn't asserted DTR yet -- arduino-cli has a
+  // small open-then-pause-then-toggle window at the start.
+  if (g_bridge_saw_data && !dtr && g_bridge_dtr_low_since > 0
+      && (now - g_bridge_dtr_low_since) > 300) {
+    bridge_exit("host_closed");
+    return;
+  }
+}
 
 // =============================================================================
 // Main + Setup
@@ -201,31 +338,54 @@ static String read_line_blocking(Stream& s, int max_len = 512) {
 }
 
 void loop() {
-
-  // 1. Wait for command from laptop on connection to hardware
-
-  String cmd = read_line_blocking(Serial);
-  cmd.trim();
-  if (cmd.length() == 0) {
+  // ---- 0. While in flash-passthrough, skip the command parser entirely. ----
+  // bridge_tick() does its own non-blocking USB<->UART forwarding and exits
+  // back to harness mode on timeout or host-disconnect. We intentionally do
+  // NOT take any other action while bridged -- in particular, no quarantine
+  // logic and no trace capture; the kill lines belong to esptool right now.
+  if (g_in_bridge) {
+    bridge_tick();
     return;
   }
 
-  // Control plane
+  // ---- 1. Wait for any command from the laptop on USB CDC. ----
+  String cmd = read_line_blocking(Serial);
+  cmd.trim();
+  if (cmd.length() == 0) return;
 
+  // ---- Bridge / passthrough request --------------------------------------
+  if (cmd == "BRIDGE" || cmd.startsWith("BRIDGE ")) {
+    uint32_t seconds = 90;
+    int sp = cmd.indexOf(' ');
+    if (sp > 0) {
+      long parsed = cmd.substring(sp + 1).toInt();
+      if (parsed > 0) seconds = (uint32_t)parsed;
+    }
+    Serial.printf("ACK bridge %lu\n", (unsigned long)seconds);
+    Serial.flush();
+    bridge_enter(seconds);
+    return;
+  }
+
+  // ---- Control plane: quarantine + status ---------------------------------
   if (cmd == "QUARANTINE") {
     fire_quarantine();
     Serial.println("ACK quarantined");
     return;
   }
-  if (cmd == "QUARANTINE") {
+  if (cmd == "UNQUARANTINE") {
     release_quarantine_uart();
     Serial.println("ACK unquarantined");
     return;
   }
   if (cmd == "STATUS") {
+    // Ask the ESP32 over UART. We give it a generous window because the
+    // ESP32 can be mid-flush from a previous TRACE and 200 ms isn't always
+    // enough on USB-CDC-multipl  exed ports. If it still times out, the
+    // hardware kill probably worked and the chip is in download mode.
     while (Serial1.available()) Serial1.read();   // drop stale RX bytes
     Serial1.println("STATUS");
-    Serial1.flush(); // flush
+    Serial1.flush();                              // make sure it's on the wire
     String reply;
     bool got = wait_uart_line(reply, 1000);
     if (got && reply.startsWith("STATUS")) {
@@ -233,14 +393,12 @@ void loop() {
     } else {
       Serial.print("STATUS unresponsive (got=");
       Serial.print(got ? "\"" : "<timeout>");
-      if (got) {
-        Serial.print(reply);
-        Serial.print("\"");
-      }
+      if (got) { Serial.print(reply); Serial.print("\""); }
       Serial.println(")");
     }
     return;
   }
+  // ---- End control plane --------------------------------------------------
 
   if (!cmd.startsWith("RUN ")) {
     // Hex-dump the bad bytes so the runner can see what actually arrived
@@ -256,13 +414,11 @@ void loop() {
     return;
   }
 
-  // 2. Forward command to ESP DEV over UART1
-
-  Serial.println(cmd);
+  // ---- 2. Forward the command to the ESP32 over UART1. ----
+  Serial1.println(cmd);
   uint32_t fn_dispatch_us = micros();
 
-  // 3. wait for ESP to raise trigger
-
+  // ---- 3. Wait for the ESP32 to raise the trigger (start of fn). ----
   uint32_t deadline = millis() + 200;
   String   pre_trigger_err;
   bool     have_pre_err = false;
@@ -287,7 +443,8 @@ void loop() {
     while (Serial1.available()) Serial1.read();
     return;
   }
-   // ---- 4. Capture TRACE_LEN ADC samples as fast as the core lets us. ----
+
+  // ---- 4. Capture TRACE_LEN ADC samples as fast as the core lets us. ----
   // analogRead() on the Earle Philhower core takes ~3-5 us per call,
   // so 256 samples covers ~1 ms -- enough to capture a strcmp window.
   for (int i = 0; i < TRACE_LEN; i++) {
@@ -312,3 +469,4 @@ void loop() {
 
   (void)fn_dispatch_us;  // available for latency telemetry later
 }
+
