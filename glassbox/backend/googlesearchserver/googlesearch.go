@@ -22,7 +22,7 @@ type ImageResult struct {
 	Link        string `json:"link"`
 	DisplayLink string `json:"displayLink"`
 	Image       struct {
-		ThumbnailUrl string `json:"thumbnailUrl"`
+		ThumbnailUrl string `json:"thumbnailLink"`
 		Width        int    `json:"width"`
 		Height       int    `json:"height"`
 	} `json:"image"`

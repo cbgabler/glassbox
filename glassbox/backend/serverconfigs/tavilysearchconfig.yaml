@@ -1,0 +1,33 @@
+# Tavily Search Server Configuration
+server_id: "tavily_search_server"
+description: "Provides Tavily search functionality for agent workflows (AI-optimized search)"
+
+# Runtime configuration
+runtime:
+  type: "go"
+  command: "go"
+  args: ['tavilysearchserver/tavilysearch.go']
+  port: 8085
+
+# Environment variables required
+env:
+  TAVILY_API_KEY: "${TAVILY_API_KEY}"
+
+# Tools provided by this server
+tools:
+  - tool_id: "tavily_search"  
+    description: "Search the web using Tavily for AI-optimized results"
+    handler: "search"
+    
+    input_schema:
+      properties:
+        query:
+          type: "string"
+          description: "Search query to perform"
+        max_results:
+          type: "number"
+          description: "Maximum number of results to return (default: 5)"
+          default: 5
+      
+      required:
+        - query

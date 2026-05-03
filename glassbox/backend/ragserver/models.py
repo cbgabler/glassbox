@@ -1,6 +1,7 @@
 from typing import Optional, List
 from enum import Enum
 from pydantic import BaseModel, Field
+from datetime import datetime, timezone
 
 class Severity(str, Enum):
     CRITICAL = "CRITICAL"
@@ -46,3 +47,40 @@ class IndexCodeRequest(BaseModel):
 class AddFindingRequest(BaseModel):
     run_id: str
     finding: Finding
+
+
+class MemoryNote(BaseModel):
+    id: str
+    title: str
+    problem: str
+    insight: str
+    snippet: Optional[str] = None
+    file: Optional[str] = None
+    line: Optional[int] = None
+    tags: List[str] = []
+    source_run_id: Optional[str] = None
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    def to_embed_text(self) -> str:
+        text = f"{self.title}\nProblem: {self.problem}\nInsight: {self.insight}"
+        if self.file:
+            text += f"\nFile: {self.file}"
+            if self.line:
+                text += f":{self.line}"
+        if self.tags:
+            text += f"\nTags: {', '.join(self.tags)}"
+        if self.snippet:
+            text += f"\nSnippet:\n{self.snippet}"
+        return text
+
+
+class AddMemoryNoteRequest(BaseModel):
+    run_id: str
+    note: MemoryNote
+
+
+class SearchMemoryRequest(BaseModel):
+    run_id: str
+    query: str
+    k: int = 5
+    tag_filter: Optional[str] = None

@@ -1,4 +1,8 @@
 import { useState, useRef, useEffect } from "react"
+import ReactMarkdown from "react-markdown"
+import remarkGfm from "remark-gfm"
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter"
+import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism"
 import { useSearchParams, Link, useNavigate } from "react-router-dom"
 import { FileTree } from "@/components/FileTree"
 import { ChatPanel } from "@/components/ChatPanel"
@@ -66,7 +70,6 @@ export function AuditDashboard() {
   }
 
   const handleDone = async () => {
-    
     try {
       const res = await fetch("http://localhost:8080/done", {
         method: "POST",
@@ -141,15 +144,45 @@ export function AuditDashboard() {
               {isRightCollapsed ? <PanelRightOpen className="w-4 h-4" /> : <PanelRightClose className="w-4 h-4" />}
             </button>
           </div>
-          <div className="flex-1 overflow-y-auto p-6 lg:p-8">
-            {codeBlocks.length === 0 && !isGenerating && (
-              <p className="text-muted-foreground text-sm">No findings yet.</p>
-            )}
-            {codeBlocks.map((block, i) => (
-              <div key={i} className="mb-4 p-4 rounded-lg border border-white/10 bg-white/5 text-sm text-foreground">
-                <pre className="whitespace-pre-wrap font-mono text-xs">{block}</pre>
+          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+            {codeBlocks.length === 0 ? (
+              <div className="flex h-full min-h-48 items-center justify-center rounded-xl border border-dashed border-white/10 bg-white/5 text-sm text-muted-foreground">
+                {isGenerating ? "Analyzing..." : "No findings yet."}
               </div>
-            ))}
+            ) : (
+              codeBlocks.map((snippet, index) => (
+                <div
+                  key={index}
+                  className="rounded-xl border border-emerald-500/15 bg-black/60 p-5 shadow-inner prose prose-invert prose-sm max-w-none prose-pre:!p-0 prose-pre:!bg-transparent prose-pre:border-0"
+                >
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      code({ node, inline, className, children, ...props }: any) {
+                        const match = /language-(\w+)/.exec(className || "")
+                        return !inline && match ? (
+                          <SyntaxHighlighter
+                            {...props}
+                            style={vscDarkPlus}
+                            language={match[1]}
+                            PreTag="div"
+                            className="rounded-md border border-white/10 !bg-[#0a0a0a] !p-3 !my-2 text-[12px] font-mono shadow-inner"
+                          >
+                            {String(children).replace(/\n$/, "")}
+                          </SyntaxHighlighter>
+                        ) : (
+                          <code {...props} className={`${className} bg-white/10 border border-white/5 px-1 py-0.5 rounded text-emerald-300 font-mono text-[0.85em]`}>
+                            {children}
+                          </code>
+                        )
+                      }
+                    }}
+                  >
+                    {snippet}
+                  </ReactMarkdown>
+                </div>
+              ))
+            )}
           </div>
         </Panel>
 

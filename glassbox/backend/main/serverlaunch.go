@@ -65,6 +65,7 @@ func StartServer(srv *server.MCPServer) (*os.Process, error) {
 	}
 
 	cmd := exec.Command(exe, args...)
+	cmd.Env = os.Environ() // Inherit all env vars including loaded .env
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 

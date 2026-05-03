@@ -43,6 +43,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -175,7 +176,7 @@ type startAuditResponse struct {
 type targetResult struct {
 	Name         string  `json:"name"`
 	Path         string  `json:"path"`
-	State        string  `json:"state"`           // queued|copy|compile|esptool|booting|verifying|pass|fail|skipped|cancelled
+	State        string  `json:"state"` // queued|copy|compile|esptool|booting|verifying|pass|fail|skipped|cancelled
 	Pass         bool    `json:"pass"`
 	Reason       string  `json:"reason,omitempty"`
 	StartedAt    string  `json:"started_at,omitempty"`
@@ -195,7 +196,7 @@ type auditStatusResponse struct {
 	Completed     int            `json:"completed"`
 	Passed        int            `json:"passed"`
 	Failed        int            `json:"failed"`
-	CurrentIndex  int            `json:"current_index"`  // 1-based; 0 if not yet started
+	CurrentIndex  int            `json:"current_index"` // 1-based; 0 if not yet started
 	CurrentTarget string         `json:"current_target,omitempty"`
 	CurrentStep   string         `json:"current_step,omitempty"`
 	LastUpdate    string         `json:"last_update"`
@@ -736,7 +737,9 @@ func runOneTarget(a *audit, idx int, t targetInfo) bool {
 
 	cmd := exec.CommandContext(ctx, a.python, args...)
 	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if runtime.GOOS != "windows" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

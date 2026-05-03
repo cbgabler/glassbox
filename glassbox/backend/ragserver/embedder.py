@@ -4,6 +4,10 @@ import numpy as np
 from typing import List
 from openai import AsyncOpenAI
 from sentence_transformers import SentenceTransformer
+from dotenv import load_dotenv
+
+# Load .env from ragserver directory
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
 class FindingsEmbedder:
     """Calls NVIDIA nv-embedqa-e5-v5 via OpenAI-compatible API."""
