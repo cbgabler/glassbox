@@ -42,9 +42,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -591,7 +593,9 @@ func runOneTarget(a *audit, idx int, t targetInfo) bool {
 
 	cmd := exec.CommandContext(ctx, a.python, args...)
 	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
-	// cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // Removed for Windows compatibility
+	if runtime.GOOS != "windows" {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
