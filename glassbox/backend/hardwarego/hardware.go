@@ -591,7 +591,7 @@ func runOneTarget(a *audit, idx int, t targetInfo) bool {
 
 	cmd := exec.CommandContext(ctx, a.python, args...)
 	cmd.Env = append(os.Environ(), "PYTHONUNBUFFERED=1")
-	cmd.SysProcAttr = platformSysProcAttr()
+	// cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true} // Removed for Windows compatibility
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
