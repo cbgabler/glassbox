@@ -5,7 +5,7 @@ import pickle
 import pathspec
 from pathlib import Path
 from typing import List, Dict, Optional
-from models import Finding, Severity
+from models import Finding, Severity, MemoryNote
 from embedder import FindingsEmbedder, CodeEmbedder
 
 class RAGStore:
@@ -20,6 +20,10 @@ class RAGStore:
         
         self.code_index: Optional[faiss.Index] = None
         self.code_metadata: List[Dict] = []  # {file, start_line, end_line, content}
+
+        # Long-term reusable memory notes (insights + snippets)
+        self.memory_index: Optional[faiss.Index] = None
+        self.memory_metadata: List[MemoryNote] = []
         
         self.storage_path = Path.home() / ".glassbox" / "runs" / run_id
         self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -135,6 +139,36 @@ class RAGStore:
             results.append(self.code_metadata[idx])
         return results
 
+    async def add_memory_note(self, note: MemoryNote):
+        """Add a reusable insight/snippet note for future audits."""
+        vector = await self.findings_embedder.embed(note.to_embed_text())
+
+        if self.memory_index is None:
+            self.memory_index = faiss.IndexFlatL2(vector.shape[1])
+
+        self.memory_index.add(vector)
+        self.memory_metadata.append(note)
+
+    async def search_memory_notes(self, query: str, k: int = 5, tag_filter: Optional[str] = None) -> List[MemoryNote]:
+        if self.memory_index is None or not self.memory_metadata:
+            return []
+
+        vector = await self.findings_embedder.embed(query)
+        search_k = max(k * 5, k)
+        distances, indices = self.memory_index.search(vector, search_k)
+
+        results: List[MemoryNote] = []
+        for idx in indices[0]:
+            if idx < 0 or idx >= len(self.memory_metadata):
+                continue
+            note = self.memory_metadata[idx]
+            if tag_filter and tag_filter not in note.tags:
+                continue
+            results.append(note)
+            if len(results) >= k:
+                break
+        return results
+
     def save(self):
         """Persist indexes and metadata to disk."""
         if self.findings_index:
@@ -146,6 +180,11 @@ class RAGStore:
             faiss.write_index(self.code_index, str(self.storage_path / "code.index"))
         with open(self.storage_path / "code_meta.pkl", "wb") as f:
             pickle.dump(self.code_metadata, f)
+
+        if self.memory_index:
+            faiss.write_index(self.memory_index, str(self.storage_path / "memory.index"))
+        with open(self.storage_path / "memory_meta.pkl", "wb") as f:
+            pickle.dump(self.memory_metadata, f)
 
     def load(self):
         """Load indexes and metadata from disk."""
@@ -160,6 +199,12 @@ class RAGStore:
         if (self.storage_path / "code_meta.pkl").exists():
             with open(self.storage_path / "code_meta.pkl", "rb") as f:
                 self.code_metadata = pickle.load(f)
+
+        if (self.storage_path / "memory.index").exists():
+            self.memory_index = faiss.read_index(str(self.storage_path / "memory.index"))
+        if (self.storage_path / "memory_meta.pkl").exists():
+            with open(self.storage_path / "memory_meta.pkl", "rb") as f:
+                self.memory_metadata = pickle.load(f)
 
     def export_findings_vectors(self, max_items: Optional[int] = None, include_vectors: bool = True) -> List[Dict]:
         if self.findings_index is None or not self.findings_metadata:

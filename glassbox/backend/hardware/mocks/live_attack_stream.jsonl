@@ -1,12 +1,20 @@
 {"t": 0.0, "type": "run_started", "run_id": "run_demo_001", "fn": "strcmp_naive", "fn_id": 1, "secret_len": 8, "model": "baseline.joblib", "streak_target": 3, "leak_threshold": 0.85}
 {"t": 0.05, "type": "status", "victim": "running", "monitor": "armed"}
-{"t": 0.15, "type": "trace", "fn": "strcmp_naive", "byte": 0, "byte_hex": "0x00", "rep": 0, "cycles": 56, "micros": 1, "label": "timing_leak", "leak_confidence": 0.886, "streak": 1}
-{"t": 0.162, "type": "trace", "fn": "strcmp_naive", "byte": 0, "byte_hex": "0x00", "rep": 1, "cycles": 56, "micros": 1, "label": "timing_leak", "leak_confidence": 0.956, "streak": 2}
-{"t": 0.174, "type": "trace", "fn": "strcmp_naive", "byte": 0, "byte_hex": "0x00", "rep": 2, "cycles": 56, "micros": 1, "label": "timing_leak", "leak_confidence": 0.895, "streak": 3}
-{"t": 0.186, "type": "verdict_fired", "label": "timing_leak", "leak_confidence": 0.895, "channel_argmax": "cycles", "streak_at_fire": 3, "calls_before_fire": 3}
-{"t": 0.191, "type": "quarantine_command", "method": "kill_lines+nvs", "pico_pin_kill_en": 3, "pico_pin_kill_boot": 4}
-{"t": 0.211, "type": "uart_ack", "from": "esp32", "msg": "ACK quarantined"}
-{"t": 0.236, "type": "kill_line_assert", "lines": ["KILL_BOOT", "KILL_EN"], "duration_ms": 20}
-{"t": 0.256, "type": "kill_line_release", "lines": ["KILL_EN", "KILL_BOOT"]}
-{"t": 0.306, "type": "status", "victim": "quarantined", "monitor": "fired", "via": "rom_bootloader"}
-{"t": 0.356, "type": "run_finished", "run_id": "run_demo_001", "verdict": "leak_detected_and_quarantined", "calls_total": 3, "wall_seconds": 0.356, "bytes_recovered": 0, "secret_len": 8}
+{"t": 0.15, "type": "trace", "fn": "strcmp_naive", "byte": 0, "byte_hex": "0x00", "rep": 0, "cycles": 56, "micros": 1, "label": "uncertain", "leak_confidence": 0.61, "streak": 0}
+{"t": 0.168, "type": "trace", "fn": "strcmp_naive", "byte": 0, "byte_hex": "0x00", "rep": 1, "cycles": 56, "micros": 1, "label": "uncertain", "leak_confidence": 0.74, "streak": 0}
+{"t": 0.186, "type": "trace", "fn": "strcmp_naive", "byte": 0, "byte_hex": "0x00", "rep": 2, "cycles": 56, "micros": 1, "label": "uncertain", "leak_confidence": 0.69, "streak": 0}
+{"t": 0.204, "type": "trace", "fn": "strcmp_naive", "byte": 0, "byte_hex": "0x00", "rep": 3, "cycles": 56, "micros": 1, "label": "uncertain", "leak_confidence": 0.78, "streak": 0}
+{"t": 0.222, "type": "trace", "fn": "strcmp_naive", "byte": 0, "byte_hex": "0x00", "rep": 4, "cycles": 56, "micros": 1, "label": "uncertain", "leak_confidence": 0.81, "streak": 0}
+{"t": 0.24, "type": "trace", "fn": "strcmp_naive", "byte": 1, "byte_hex": "0x01", "rep": 0, "cycles": 56, "micros": 1, "label": "uncertain", "leak_confidence": 0.83, "streak": 0}
+{"t": 0.258, "type": "trace", "fn": "strcmp_naive", "byte": 1, "byte_hex": "0x01", "rep": 1, "cycles": 56, "micros": 1, "label": "uncertain", "leak_confidence": 0.79, "streak": 0}
+{"t": 0.276, "type": "trace", "fn": "strcmp_naive", "byte": 1, "byte_hex": "0x01", "rep": 2, "cycles": 56, "micros": 1, "label": "uncertain", "leak_confidence": 0.84, "streak": 0}
+{"t": 0.294, "type": "trace", "fn": "strcmp_naive", "byte": 1, "byte_hex": "0x01", "rep": 3, "cycles": 56, "micros": 1, "label": "timing_leak", "leak_confidence": 0.88, "streak": 1}
+{"t": 0.312, "type": "trace", "fn": "strcmp_naive", "byte": 1, "byte_hex": "0x01", "rep": 4, "cycles": 56, "micros": 1, "label": "timing_leak", "leak_confidence": 0.91, "streak": 2}
+{"t": 0.33, "type": "trace", "fn": "strcmp_naive", "byte": 2, "byte_hex": "0x02", "rep": 0, "cycles": 56, "micros": 1, "label": "timing_leak", "leak_confidence": 0.94, "streak": 3}
+{"t": 0.348, "type": "verdict_fired", "label": "timing_leak", "leak_confidence": 0.94, "channel_argmax": "cycles", "streak_at_fire": 3, "calls_before_fire": 11}
+{"t": 0.353, "type": "quarantine_command", "method": "kill_lines+nvs", "pico_pin_kill_en": 3, "pico_pin_kill_boot": 4}
+{"t": 0.373, "type": "uart_ack", "from": "esp32", "msg": "ACK quarantined"}
+{"t": 0.398, "type": "kill_line_assert", "lines": ["KILL_BOOT", "KILL_EN"], "duration_ms": 20}
+{"t": 0.418, "type": "kill_line_release", "lines": ["KILL_EN", "KILL_BOOT"]}
+{"t": 0.468, "type": "status", "victim": "quarantined", "monitor": "fired", "via": "rom_bootloader"}
+{"t": 0.518, "type": "run_finished", "run_id": "run_demo_001", "verdict": "leak_detected_and_quarantined", "calls_total": 11, "wall_seconds": 0.518, "bytes_recovered": 0, "secret_len": 8}

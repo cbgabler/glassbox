@@ -6,7 +6,7 @@ description: "Provides Google search functionality for agent workflows"
 runtime:
   type: "go"
   command: "go"
-  args: ['C:\Users\antho\glassbox2\glassbox2\glassbox\backend\googlesearchserver\googlesearch.go']
+  args: ['googlesearchserver/googlesearch.go']
   port: 8082
 
 # Environment variables required
@@ -26,7 +26,7 @@ tools:
           type: "string"
           description: "Search query to perform on Google"
         max_results:
-          type: "integer"
+          type: "number"
           description: "Maximum number of results to return (default: 5)"
           default: 5
       
@@ -43,7 +43,7 @@ tools:
           type: "string"
           description: "Image search query"
         max_results:
-          type: "integer"
+          type: "number"
           description: "Maximum number of image results (default: 5)"
           default: 5
       

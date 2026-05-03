@@ -1,2 +1,108 @@
+# =============================================================================
+# GlassBox repo-wide .gitignore
+#
+# Single source of truth. Don't add per-directory .gitignore files unless
+# there's a real reason -- prefer adding/refining patterns here.
+#
+# Sections:
+#   1. Secrets & environment
+#   2. Compiled binaries (Go, C/C++, Arduino)
+#   3. Python
+#   4. Node / frontend (Vite)
+#   5. IDE / editor / OS
+#   6. Logs
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 1. Secrets & environment
+# -----------------------------------------------------------------------------
+.env
+.env.local
+.env.*.local
+*.local
+
+
+# -----------------------------------------------------------------------------
+# 2. Compiled binaries (Go, C/C++, Arduino)
+#    Build artifacts -- regenerate with build-all.sh / arduino-cli.
+# -----------------------------------------------------------------------------
+
+# Go binaries -- backend build output and any other Go binaries
+glassbox/backend/bin/
+glassbox/backend/main.exe
+*.exe
+*.exe~
+*.dll
+*.so
+*.so.*
+*.dylib
+*.o
+*.a
+*.out
+
+# Generic build directories (Arduino harness, other tools)
+build/
+dist/
+dist-ssr/
+
+
+# -----------------------------------------------------------------------------
+# 3. Python
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Virtual environments
 .venv/
 venv/
+env/
+
+
+# -----------------------------------------------------------------------------
+# 4. Node / frontend (Vite)
+# -----------------------------------------------------------------------------
+node_modules/
+*.tsbuildinfo
+
+
+# -----------------------------------------------------------------------------
+# 5. IDE / editor / OS
+# -----------------------------------------------------------------------------
+
+# Editors
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.iml
+*.swp
+*.swo
+*.sw?
+*~
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+
+# macOS / Windows junk
+.DS_Store
+Thumbs.db
+
+
+# -----------------------------------------------------------------------------
+# 6. Logs
+# -----------------------------------------------------------------------------
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+clonedrepos

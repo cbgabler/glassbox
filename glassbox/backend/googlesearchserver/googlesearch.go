@@ -22,7 +22,7 @@ type ImageResult struct {
 	Link        string `json:"link"`
 	DisplayLink string `json:"displayLink"`
 	Image       struct {
-		ThumbnailUrl string `json:"thumbnailUrl"`
+		ThumbnailUrl string `json:"thumbnailLink"`
 		Width        int    `json:"width"`
 		Height       int    `json:"height"`
 	} `json:"image"`
@@ -170,7 +170,9 @@ func performGoogleSearch(query string, maxResults int) ([]SearchResult, error) {
 
 func performImageSearch(query string, maxResults int) ([]ImageResult, error) {
 	apiKey := os.Getenv("GOOGLE_API_KEY")
+	log.Println("GOOGLE_API_KEY:", apiKey) // Debug
 	searchEngineID := os.Getenv("GOOGLE_SEARCH_ENGINE_ID")
+	log.Println("GOOGLE_SEARCH_ENGINE_ID:", searchEngineID) // Debug
 
 	if apiKey == "" || searchEngineID == "" {
 		log.Println("Warning: GOOGLE_API_KEY or GOOGLE_SEARCH_ENGINE_ID not set")
