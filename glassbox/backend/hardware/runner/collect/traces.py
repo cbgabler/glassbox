@@ -116,7 +116,6 @@ def collect_two_groups(pod: Pod,
     pathological input) but counts them so we don't loop forever on a
     target that crashes 100% of the time -- bail out after a fixed ratio.
     """
-    # TODO:
     rng = np.random.default_rng(seed)
     rows = []
     total = 2 * n_per_group
@@ -134,25 +133,21 @@ def collect_two_groups(pod: Pod,
             rows.append(_trace_to_row(tr, target="gb_target", group=label))
             if on_progress: on_progress(len(rows), total)
     return pd.DataFrame(rows)
-    ...
 
 
 def _trace_to_row(tr: Trace, *, target: str, group: str) -> dict:
     """Convert a Trace into a dict matching the parquet schema documented
     at the top of this file."""
-    # TODO:
-    #   return {"target": target, "group": group, "fn_id": tr.fn_id,
-    #           "input_hex": tr.input_hex, "cycles": tr.cycles,
-    #           "micros": tr.micros, "insns": tr.insns, "branches": tr.branches,
-    #           "power": tr.power.tolist()}
-    ...
+    return {"target": target, "group": group, "fn_id": tr.fn_id,
+              "input_hex": tr.input_hex, "cycles": tr.cycles,
+              "micros": tr.micros, "insns": tr.insns, "branches": tr.branches,
+              "power": tr.power.tolist()}
 
 
 def write_parquet(df: pd.DataFrame, path: str) -> None:
     """Write to parquet with pyarrow. The 'power' column needs explicit
     list<uint16> handling so it round-trips through analyze/eval.py."""
-    # TODO: df.to_parquet(path, engine="pyarrow", index=False)
-    ...
+    df.to_parquet(path, engine="pyarrow", index=False)
 
 
 # =============================================================================
@@ -175,16 +170,15 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
-    # TODO:
-    #   pod = pod_mod.open_pod(args.pico_port)
-    #   secret = bytes.fromhex(args.secret) if args.secret else bytes(16)
-    #   pod.set_secret(secret)
-    #   campaign = CAMPAIGNS[args.campaign](secret_len=args.secret_len)
-    #   df = collect_two_groups(pod, campaign, n_per_group=args.n, seed=args.seed,
-    #                           on_progress=lambda d, t: print(f"\r{d}/{t}", end=""))
-    #   write_parquet(df, args.out)
-    #   pod.close()
-    #   print(f"\nwrote {len(df)} rows to {args.out}")
+    pod = pod_mod.open_pod(args.pico_port)
+    secret = bytes.fromhex(args.secret) if args.secret else bytes(16)
+    pod.set_secret(secret)
+    campaign = CAMPAIGNS[args.campaign](secret_len=args.secret_len)
+    df = collect_two_groups(pod, campaign, n_per_group=args.n, seed=args.seed,
+                            on_progress=lambda d, t: print(f"\r{d}/{t}", end=""))
+    write_parquet(df, args.out)
+    pod.close()
+    print(f"\nwrote {len(df)} rows to {args.out}")
     return 0
 
 
