@@ -342,31 +342,88 @@ def _send_bridge_command(pico_port: str, seconds: int = _BRIDGE_DEFAULT_SECONDS,
 # -----------------------------------------------------------------------------
 
 def verify_post_flash(pico_port: str, *, baud: int = 115200,
-                    timeout_s: float = 12.0) -> bool:
-  """Open the Pico's USB CDC and confirm the freshly-flashed harness
-  is responding through the Pico->ESP32 UART link.
+                      timeout_s: float = 12.0) -> bool:
+  """Confirm the freshly-flashed ESP32 harness is alive end-to-end.
 
-  We rely on the existing `runner.open_pod` -- it already knows how to
-  wait for the 'READY harness' banner the Pico emits after a reset. The
-  harness reset is forced by us opening the port (DTR toggle).
+  Inline STATUS probe -- no dependency on the (not-yet-implemented)
+  `runner.open_pod`. We open the Pico's USB CDC and write `STATUS\\n`.
+  The Pico's command parser proxies that onto its UART link to the
+  ESP32, waits for the ESP32's reply, and forwards it back. So a single
+  round-trip exercises the entire chain:
+
+      host  --(USB CDC)-->  Pico  --(UART0)-->  ESP32
+                                        \\---(reply)--/
+
+  The Pico's reply (per `raspberry/harness/harness.ino`) is one of:
+    `STATUS running`             -- ESP32 alive, RUN commands accepted
+    `STATUS quarantined`         -- ESP32 alive, RUN commands refused
+    `STATUS unresponsive (...)`  -- ESP32 not replying over UART
+
+  Returns True for the first two, False for the third or for an overall
+  timeout. We accept "quarantined" as success because the chip is
+  demonstrably running our firmware -- "verified alive" is the criterion
+  here, not "willing to accept work".
   """
   print(f"[auto_flash] verifying via Pico {pico_port} (timeout {timeout_s:.0f}s)")
   try:
-    from runner import open_pod                            # local import: pyserial may be optional
+    import serial as _serial                              # type: ignore
   except Exception as e:
-    print(f"    cannot import runner.open_pod: {e}")
+    print(f"    pyserial missing ({e}); cannot verify.")
     return False
+
   try:
-    ser = open_pod(pico_port, baud=baud, ready_timeout_s=timeout_s)
+    ser = _serial.Serial(pico_port, baudrate=baud, timeout=0.25)
   except Exception as e:
-    print(f"    open_pod failed: {e}")
+    print(f"    open({pico_port}) failed: {e}")
     return False
+
   try:
-    ser.close()
-  except Exception:
-    pass
-  print("[auto_flash] post-flash verification OK -- harness alive.")
-  return True
+    # Settle: the Pico's USB CDC stack just had its DTR toggled by our
+    # open(); give it a beat, then drop any stale RX (e.g. a trailing
+    # ACK from a previous BRIDGE session that hasn't been consumed).
+    time.sleep(0.3)
+    try:
+      ser.reset_input_buffer()
+    except Exception:
+      pass
+
+    ser.write(b"STATUS\n")
+    ser.flush()
+
+    deadline = time.monotonic() + timeout_s
+    buf = b""
+    while time.monotonic() < deadline:
+      chunk = ser.read(128)
+      if not chunk:
+        continue
+      buf += chunk
+      while b"\n" in buf:
+        line, _, buf = buf.partition(b"\n")
+        text = line.decode("ascii", "replace").strip()
+        if not text:
+          continue
+        print(f"    pico: {text}")
+        if text.startswith("STATUS running"):
+          print("[auto_flash] post-flash verification OK -- harness running.")
+          return True
+        if text.startswith("STATUS quarantined"):
+          print("[auto_flash] post-flash verification OK -- harness alive "
+                "(quarantined; clear with 'UNQUARANTINE').")
+          return True
+        if text.startswith("STATUS unresponsive"):
+          print("[auto_flash] post-flash verification FAILED -- "
+                "Pico reachable but ESP32 not responding over UART.")
+          return False
+        # Anything else -- ignore and keep listening until deadline.
+
+    print(f"[auto_flash] post-flash verification TIMEOUT after {timeout_s:.1f}s "
+          f"(no STATUS reply from Pico on {pico_port}).")
+    return False
+  finally:
+    try:
+      ser.close()
+    except Exception:
+      pass
 
 
 # -----------------------------------------------------------------------------
