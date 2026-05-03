@@ -13,3 +13,4 @@ agents:
       - "serverconfigs/hardwareconfig.yaml"
     server_generation: false
     infra_generation: false
+>>>>>>>>> Temporary merge branch 2
