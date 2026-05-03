@@ -170,7 +170,9 @@ func performGoogleSearch(query string, maxResults int) ([]SearchResult, error) {
 
 func performImageSearch(query string, maxResults int) ([]ImageResult, error) {
 	apiKey := os.Getenv("GOOGLE_API_KEY")
+	log.Println("GOOGLE_API_KEY:", apiKey) // Debug
 	searchEngineID := os.Getenv("GOOGLE_SEARCH_ENGINE_ID")
+	log.Println("GOOGLE_SEARCH_ENGINE_ID:", searchEngineID) // Debug
 
 	if apiKey == "" || searchEngineID == "" {
 		log.Println("Warning: GOOGLE_API_KEY or GOOGLE_SEARCH_ENGINE_ID not set")

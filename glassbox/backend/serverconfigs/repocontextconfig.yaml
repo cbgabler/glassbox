@@ -1,0 +1,79 @@
+# Repo Context Server Configuration
+server_id: "repo_context_server"
+description: "Clones repos into GlassBox runs and exposes repo structure and file reads"
+
+# Runtime configuration
+runtime:
+  type: "go"
+  command: "go"
+  args: ['repocontextserver/repocontext.go']
+  port: 8083
+
+# Tools provided by this server
+tools:
+  - tool_id: "clone_repo"
+    description: "Clone a git URL or copy a local repo into a run workspace"
+    handler: "clone_repo"
+
+    input_schema:
+      properties:
+        git_url:
+          type: "string"
+          description: "Git URL to clone"
+        path:
+          type: "string"
+          description: "Local repo path to copy"
+        branch:
+          type: "string"
+          description: "Optional branch to clone"
+
+  - tool_id: "get_repo_context"
+    description: "Return repo tree information or read a file from a cloned run"
+    handler: "get_repo_context"
+
+    input_schema:
+      properties:
+        run_id:
+          type: "string"
+          description: "Run ID returned by clone_repo"
+        path:
+          type: "string"
+          description: "Optional repo-relative directory to inspect"
+        file_path:
+          type: "string"
+          description: "Optional repo-relative file to read"
+        max_depth:
+          type: "number"
+          description: "Maximum tree depth"
+          default: 3
+        max_entries:
+          type: "number"
+          description: "Maximum tree entries to return"
+          default: 500
+        start_line:
+          type: "number"
+          description: "Start line for file reads"
+          default: 1
+        end_line:
+          type: "number"
+          description: "End line for file reads"
+
+  - tool_id: "get_file_contents"
+    description: "Read file contents for a run_id + file_path"
+    handler: "get_file"
+
+    input_schema:
+      properties:
+        run_id:
+          type: "string"
+          description: "Run ID returned by clone_repo or get_repo_context"
+        file_path:
+          type: "string"
+          description: "Repo-relative file path to read"
+        start_line:
+          type: "number"
+          description: "Start line for file reads"
+          default: 1
+        end_line:
+          type: "number"
+          description: "End line for file reads"
