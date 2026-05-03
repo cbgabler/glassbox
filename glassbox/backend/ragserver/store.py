@@ -160,3 +160,37 @@ class RAGStore:
         if (self.storage_path / "code_meta.pkl").exists():
             with open(self.storage_path / "code_meta.pkl", "rb") as f:
                 self.code_metadata = pickle.load(f)
+
+    def export_findings_vectors(self, max_items: Optional[int] = None, include_vectors: bool = True) -> List[Dict]:
+        if self.findings_index is None or not self.findings_metadata:
+            return []
+
+        total = self.findings_index.ntotal
+        count = min(total, max_items) if max_items else total
+        exported = []
+
+        for i in range(count):
+            finding = self.findings_metadata[i]
+            record = {"metadata": finding.model_dump()}
+            if include_vectors:
+                vector = self.findings_index.reconstruct(i)
+                record["vector"] = vector.tolist()
+            exported.append(record)
+        return exported
+
+    def export_code_vectors(self, max_items: Optional[int] = None, include_vectors: bool = True) -> List[Dict]:
+        if self.code_index is None or not self.code_metadata:
+            return []
+
+        total = self.code_index.ntotal
+        count = min(total, max_items) if max_items else total
+        exported = []
+
+        for i in range(count):
+            metadata = self.code_metadata[i]
+            record = {"metadata": metadata}
+            if include_vectors:
+                vector = self.code_index.reconstruct(i)
+                record["vector"] = vector.tolist()
+            exported.append(record)
+        return exported

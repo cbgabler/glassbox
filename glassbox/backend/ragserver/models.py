@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Optional, List, Dict, Any, Literal
 from enum import Enum
 from pydantic import BaseModel, Field
 
@@ -46,3 +46,33 @@ class IndexCodeRequest(BaseModel):
 class AddFindingRequest(BaseModel):
     run_id: str
     finding: Finding
+
+class ExportVectorsRequest(BaseModel):
+    run_id: str
+    max_findings: Optional[int] = None
+    max_code: Optional[int] = None
+    include_vectors: bool = True
+
+class ExportVectorsPlotRequest(BaseModel):
+    run_id: str
+    max_findings: Optional[int] = None
+    max_code: Optional[int] = None
+    max_points: Optional[int] = None
+    include_metadata: bool = True
+    reduce_method: Literal["umap", "pca", "none"] = "umap"
+    dims: int = 3
+    random_seed: int = 42
+
+class VectorPoint(BaseModel):
+    x: float
+    y: float
+    z: Optional[float] = None
+    source: Literal["finding", "code"]
+    metadata: Optional[Dict[str, Any]] = None
+
+class ExportVectorsPlotResponse(BaseModel):
+    points: List[VectorPoint]
+    dims: int
+    reduce_method: str
+    total_findings: int
+    total_code: int
