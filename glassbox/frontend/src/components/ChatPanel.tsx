@@ -1,8 +1,8 @@
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { Send, Sparkles, Bot, User, Loader2, Wrench, ChevronDown, ChevronRight } from "lucide-react"
-import { sendChatPrompt, ParsedResponse, ToolCall, ToolResult } from "@/lib/api"
+import { sendChatPrompt, parseAgentResponse, ParsedResponse, ToolCall, ToolResult, Message } from "@/lib/api"
 import { motion, AnimatePresence } from "framer-motion"
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter"
 import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism"
@@ -90,9 +90,11 @@ function MarkdownContent({ content }: { content: string }) {
 }
 
 interface ChatMessage {
-  role:    "user" | "bot";
-  content: string;
-  parsed?: ParsedResponse;
+  role:         "user" | "bot";
+  content:      string;
+  parsed?:      ParsedResponse;
+  tool_call?:   ToolCall;
+  tool_result?: ToolResult;
 }
 
 export function ChatPanel({
@@ -101,16 +103,23 @@ export function ChatPanel({
   clearTrigger,
   onRepoParsed,
   onCodeParsed,
+  streamedMessages = [],
 }: {
   isGenerating:      boolean;
   initialResponse?:  ParsedResponse;
   clearTrigger?:     number;
   onRepoParsed?:     (parsed: ParsedResponse) => void;
   onCodeParsed?:     (parsed: ParsedResponse) => void;
+  streamedMessages?: Message[];
 }) {
   const [input, setInput]       = useState("")
   const [isTyping, setIsTyping] = useState(false)
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" })
+  }, [messages, isTyping, isGenerating, initialResponse])
 
   // Clear messages when clearTrigger changes
   useEffect(() => {
@@ -130,6 +139,33 @@ export function ChatPanel({
       }])
     }
   }, [initialResponse])
+
+  // Handle streamed messages from WebSocket
+  useEffect(() => {
+    if (streamedMessages.length === 0) return
+    
+    const lastMessage = streamedMessages[streamedMessages.length - 1]
+    console.log("[ChatPanel] Processing streamed message:", lastMessage)
+    
+    const parsed = parseAgentResponse(lastMessage)
+    console.log("[ChatPanel] Parsed streamed message:", parsed)
+    
+    // Add message if it has content, tags, or tool calls/results
+    const hasContent = lastMessage.content && lastMessage.content.trim().length > 0
+    const hasParsedBlocks = parsed.repo.length > 0 || parsed.code.length > 0 || parsed.chat.length > 0
+    const hasToolInfo = lastMessage.tool_call || lastMessage.tool_result || parsed.toolCall || parsed.toolResult
+    
+    if (hasContent || hasParsedBlocks || hasToolInfo) {
+      setMessages(prev => [...prev, {
+        role:       "bot",
+        content:    lastMessage.content,
+        parsed,
+        tool_call:  lastMessage.tool_call,
+        tool_result: lastMessage.tool_result,
+      }])
+      console.log("[ChatPanel] Added streamed message to chat")
+    }
+  }, [streamedMessages])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -202,6 +238,8 @@ export function ChatPanel({
                     msg.content
                   ) : (
                     <>
+                      {msg.tool_call   && <ToolCallBlock   toolCall={msg.tool_call} />}
+                      {msg.tool_result && <ToolResultBlock toolResult={msg.tool_result} />}
                       {msg.parsed?.toolCall   && <ToolCallBlock   toolCall={msg.parsed.toolCall} />}
                       {msg.parsed?.toolResult && <ToolResultBlock toolResult={msg.parsed.toolResult} />}
                       {msg.content && <MarkdownContent content={msg.content} />}
@@ -225,6 +263,7 @@ export function ChatPanel({
             </motion.div>
           )}
         </AnimatePresence>
+        <div ref={messagesEndRef} />
       </div>
 
       <div className="p-4 bg-background shrink-0 border-t border-border mt-auto">

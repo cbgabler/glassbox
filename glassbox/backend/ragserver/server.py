@@ -5,10 +5,10 @@ from typing import Dict, Optional, Any
 from fastapi import FastAPI, HTTPException, Body
 from models import (
     Finding,
+    MemoryNote,
     Severity,
     SearchRequest,
     IndexCodeRequest,
-    AddMemoryNoteRequest,
     SearchMemoryRequest,
 )
 from embedder import FindingsEmbedder, CodeEmbedder
@@ -58,6 +58,65 @@ def _normalize_finding_payload(payload: Dict[str, Any]) -> tuple[str, Finding]:
         can_hw_confirm=bool(raw_finding.get("can_hw_confirm", False)),
     )
     return run_id, finding
+
+
+def _normalize_memory_note_payload(payload: Dict[str, Any]) -> tuple[str, MemoryNote]:
+    run_id = payload.get("run_id")
+    if not run_id:
+        raise HTTPException(status_code=400, detail="run_id is required")
+
+    raw_note = payload.get("note")
+
+    # Accept legacy/string form: {"run_id":"...", "note":"free text"}
+    if isinstance(raw_note, str):
+        text = raw_note.strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="note text is empty")
+        note = MemoryNote(
+            id=str(uuid.uuid4()),
+            title="Audit note",
+            problem="Captured during audit",
+            insight=text,
+            source_run_id=run_id,
+            tags=[],
+        )
+        return run_id, note
+
+    # Accept object forms:
+    # 1) {run_id, note: {...}}
+    # 2) {run_id, title/problem/insight/...} (top-level note fields)
+    note_obj = raw_note if isinstance(raw_note, dict) else payload
+    if not isinstance(note_obj, dict):
+        raise HTTPException(status_code=400, detail="note must be an object or string")
+
+    title = str(note_obj.get("title") or "Audit note")
+    problem = str(note_obj.get("problem") or "Captured during audit")
+    insight = str(note_obj.get("insight") or note_obj.get("note") or "").strip()
+    if not insight:
+        raise HTTPException(status_code=400, detail="note.insight is required")
+
+    tags_val = note_obj.get("tags", [])
+    tags = tags_val if isinstance(tags_val, list) else [str(tags_val)]
+
+    line_val = note_obj.get("line")
+    line = None
+    if isinstance(line_val, int):
+        line = line_val
+    elif isinstance(line_val, str) and line_val.isdigit():
+        line = int(line_val)
+
+    note = MemoryNote(
+        id=str(note_obj.get("id") or uuid.uuid4()),
+        title=title,
+        problem=problem,
+        insight=insight,
+        snippet=note_obj.get("snippet"),
+        file=note_obj.get("file"),
+        line=line,
+        tags=[str(t) for t in tags],
+        source_run_id=str(note_obj.get("source_run_id") or run_id),
+    )
+    return run_id, note
 
 
 @app.post("/execute/add_finding")
@@ -113,13 +172,14 @@ async def search_code(request: SearchRequest):
     return {"results": results}
 
 @app.post("/execute/add_memory_note")
-async def add_memory_note(request: AddMemoryNoteRequest):
-    store = get_store(request.run_id)
-    await store.add_memory_note(request.note)
+async def add_memory_note(payload: Dict[str, Any] = Body(...)):
+    run_id, note = _normalize_memory_note_payload(payload)
+    store = get_store(run_id)
+    await store.add_memory_note(note)
     store.save()
     return {
         "ok": True,
-        "run_id": request.run_id,
+        "run_id": run_id,
         "memory_notes_count": len(store.memory_metadata),
     }
 

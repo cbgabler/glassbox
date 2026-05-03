@@ -111,18 +111,13 @@ export function LandingPage() {
             <div className="hidden lg:flex w-72 flex-col bg-[#0a0a0a]/50 relative">
                <div className="flex h-10 border-b border-white/5 items-center px-4 gap-2">
                  <ShieldAlert className="w-4 h-4 text-emerald-400" />
-                 <span className="text-xs font-semibold text-foreground tracking-tight">MCP Agent</span>
+                 <span className="text-xs font-semibold text-foreground tracking-tight">Glassbox Agent</span>
                </div>
                
                <div className="flex-1 p-4 flex flex-col gap-4 overflow-hidden relative">
                  {/* Bot message */}
                  <div className="flex gap-2">
-                   <div className="w-6 h-6 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
-                     <Cpu className="w-3 h-3" />
-                   </div>
-                   <div className="bg-white/5 border border-white/10 rounded-2xl rounded-tl-sm p-3 text-xs text-foreground shadow-sm">
-                     I am connected to the MCP server. Ask me anything about the codebase.
-                   </div>
+                
                  </div>
 
                  {/* User message */}
@@ -164,7 +159,7 @@ export function LandingPage() {
           </div>
           <div className="flex flex-col gap-3 p-6 rounded-xl bg-card/40 border border-white/5 hover:-translate-y-1 hover:border-amber-500/30 hover:bg-card/60 transition-all duration-300 group cursor-default">
             <ShieldAlert className="w-5 h-5 text-amber-400 group-hover:scale-110 transition-transform" />
-            <h3 className="font-semibold text-foreground">MCP Agent</h3>
+            <h3 className="font-semibold text-foreground">Glassbox Agent</h3>
             <p className="text-sm text-muted-foreground">Ask questions, request patches, and control the pod via the built-in AI agent.</p>
           </div>
         </div>

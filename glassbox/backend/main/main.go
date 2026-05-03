@@ -55,6 +55,12 @@ func main() {
 			hub.Broadcast(msg)
 		}
 	}
+	if op, ok := provider.(*transport.OpenAIProvider); ok {
+		log.Println("Setting OpenAIProvider OnToolCall callback to broadcast tool calls to WS clients")
+		op.OnToolCall = func(msg chat.Message) {
+			hub.Broadcast(msg)
+		}
+	}
 
 	srv := &Server{
 		ag:       ag,

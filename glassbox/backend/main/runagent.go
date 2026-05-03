@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
 
@@ -25,6 +24,7 @@ import (
 
 type Hub struct {
 	mu      sync.RWMutex
+	writeMu sync.Mutex
 	clients map[*websocket.Conn]struct{}
 }
 
@@ -47,13 +47,33 @@ func (h *Hub) remove(c *websocket.Conn) {
 func (h *Hub) Broadcast(v any) {
 	data, err := json.Marshal(v)
 	if err != nil {
+		log.Printf("[Hub] Broadcast marshal error: %v", err)
 		return
 	}
 	h.mu.RLock()
-	defer h.mu.RUnlock()
+	clients := make([]*websocket.Conn, 0, len(h.clients))
 	for c := range h.clients {
-		_ = c.WriteMessage(websocket.TextMessage, data)
+		clients = append(clients, c)
 	}
+	clientCount := len(clients)
+	h.mu.RUnlock()
+	log.Printf("[Hub] Broadcasting to %d clients: %s", clientCount, string(data[:min(len(data), 200)]))
+
+	// Serialize writes because gorilla/websocket connections are not safe for concurrent writers.
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
+	for _, c := range clients {
+		if err := c.WriteMessage(websocket.TextMessage, data); err != nil {
+			log.Printf("[Hub] Write error: %v", err)
+		}
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // -------------------------------------------------------------------
@@ -86,9 +106,6 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Snapshot count before so we know which messages are new after the request
-	before := len(s.chat.GetMessages())
-
 	if err := s.provider.SendRequest(s.chat, s.ag, body.Message); err != nil {
 		log.Printf("Error: %v", err)
 		s.hub.Broadcast(map[string]string{"type": "error", "message": err.Error()})
@@ -97,27 +114,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	messages := s.chat.GetMessages()
-
 	log.Printf("Chat request complete, total messages: %d", len(messages))
-
-	// Broadcast every tool cycle added during this request over WebSocket.
-	// Tool cycles are assistant messages with both tool_call and tool_result set.
-	// The final plain-text response goes back via REST only.
-	for _, msg := range messages[before:] {
-		log.Printf("New message: %s", msg.Content)
-		// Broadcast standard tool cycles
-		if msg.ToolCall != nil && msg.ToolResult != nil {
-			s.hub.Broadcast(msg)
-			continue
-		}
-		// Also broadcast messages that contain tagged blocks (assistant outputs often include tags)
-		content := msg.Content
-		// look for common tag markers (supporting both <<tag>>...<</tag>> and repeated-closing <<tag>>)
-		if strings.Contains(content, "<<repo>>") || strings.Contains(content, "<<code>>") || strings.Contains(content, "<<chat>>") || strings.Contains(content, "<<secrets>>") || strings.Contains(content, "<<vulnerabilities>>") || strings.Contains(content, "<<findings>>") {
-			log.Printf("Broadcasting tagged assistant message")
-			s.hub.Broadcast(msg)
-		}
-	}
 
 	if len(messages) == 0 {
 		http.Error(w, "no response", http.StatusInternalServerError)
@@ -134,16 +131,22 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("ws upgrade: %v", err)
+		log.Printf("[WS] upgrade error: %v", err)
 		return
 	}
 	s.hub.add(conn)
-	log.Printf("ws connected: %s", conn.RemoteAddr())
+	log.Printf("[WS] client connected: %s, total clients: %d", conn.RemoteAddr(), len(s.hub.clients))
 
 	go func() {
-		defer s.hub.remove(conn)
+		defer func() {
+			s.hub.remove(conn)
+			log.Printf("[WS] client disconnected: %s", conn.RemoteAddr())
+		}()
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
+				if err.Error() != "websocket: close sent" {
+					log.Printf("[WS] read error: %v", err)
+				}
 				break
 			}
 		}

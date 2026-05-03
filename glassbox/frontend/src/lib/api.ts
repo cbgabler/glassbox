@@ -227,17 +227,34 @@ export const analyzeRepo = (repoUrl: string, prompt: string) =>
 // -------------------------------------------------------------------
 
 export function connectToolStream(onMessage: (msg: Message) => void): () => void {
+  console.log("[connectToolStream] Connecting to", WS_URL)
   const ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    console.log("[connectToolStream] WebSocket connected!")
+  }
 
   ws.onmessage = (event) => {
     try {
+      console.log("[connectToolStream] Raw message received:", event.data)
       const msg: Message = JSON.parse(event.data);
+      console.log("[connectToolStream] Parsed message, calling onMessage callback")
       onMessage(msg);
-    } catch {
-      console.error("ws parse error", event.data);
+    } catch (e) {
+      console.error("[connectToolStream] ws parse error", event.data, e);
     }
   };
 
-  ws.onerror = (e) => console.error("ws error", e);
-  return () => ws.close();
+  ws.onerror = (e) => {
+    console.error("[connectToolStream] ws error", e)
+  }
+
+  ws.onclose = () => {
+    console.log("[connectToolStream] WebSocket closed")
+  }
+
+  return () => {
+    console.log("[connectToolStream] Closing WebSocket")
+    ws.close()
+  }
 }

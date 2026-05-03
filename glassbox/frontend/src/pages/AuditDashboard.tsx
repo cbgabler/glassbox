@@ -6,7 +6,7 @@ import { vscDarkPlus } from "react-syntax-highlighter/dist/esm/styles/prism"
 import { useSearchParams, Link, useNavigate } from "react-router-dom"
 import { FileTree } from "@/components/FileTree"
 import { ChatPanel } from "@/components/ChatPanel"
-import { sendChatPrompt, ParsedResponse, RepoTreeResponse } from "@/lib/api"
+import { sendChatPrompt, connectToolStream, parseAgentResponse, ParsedResponse, RepoTreeResponse, Message } from "@/lib/api"
 import { CheckCircle2, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, GripVertical } from "lucide-react"
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle, PanelImperativeHandle } from "react-resizable-panels"
 
@@ -20,6 +20,16 @@ export function AuditDashboard() {
   const [initialParsed, setInitialParsed] = useState<ParsedResponse | undefined>()
   const [repoTrees, setRepoTrees]         = useState<RepoTreeResponse[]>([])
   const [codeBlocks, setCodeBlocks]       = useState<string[]>([])
+  const [streamedMessages, setStreamedMessages] = useState<Message[]>([])
+  const codeScrollRef = useRef<HTMLDivElement>(null)
+  const wsCleanupRef = useRef<(() => void) | null>(null)
+
+  useEffect(() => {
+    codeScrollRef.current?.scrollTo({
+      top: codeScrollRef.current.scrollHeight,
+      behavior: "smooth",
+    })
+  }, [codeBlocks, isGenerating])
 
   const handleRepoParsed = (parsed: ParsedResponse) => {
     setRepoTrees(prev => [...prev, ...parsed.repo])
@@ -27,6 +37,34 @@ export function AuditDashboard() {
   const handleCodeParsed = (parsed: ParsedResponse) => {
     setCodeBlocks(prev => [...prev, ...parsed.code])
   }
+
+  // Connect to WebSocket for streaming updates
+  useEffect(() => {
+    console.log("[Dashboard] Setting up WebSocket connection...")
+    const cleanup = connectToolStream((msg: Message) => {
+      console.log("[Dashboard] Received WebSocket message:", msg)
+      setStreamedMessages(prev => [...prev, msg])
+      
+      // Parse the message and update repo/code blocks
+      const parsed = parseAgentResponse(msg)
+      console.log("[Dashboard] Parsed WebSocket message:", parsed)
+      if (parsed.repo.length > 0) {
+        console.log("[Dashboard] Got", parsed.repo.length, "repo blocks from stream")
+        handleRepoParsed(parsed)
+      }
+      if (parsed.code.length > 0) {
+        console.log("[Dashboard] Got", parsed.code.length, "code blocks from stream")
+        handleCodeParsed(parsed)
+      }
+    })
+    wsCleanupRef.current = cleanup
+    console.log("[Dashboard] WebSocket connected, cleanup function stored")
+    
+    return () => {
+      console.log("[Dashboard] Cleaning up WebSocket...")
+      wsCleanupRef.current?.()
+    }
+  }, [])
 
   useEffect(() => {
     if (!repoUrl) {
@@ -144,7 +182,7 @@ export function AuditDashboard() {
               {isRightCollapsed ? <PanelRightOpen className="w-4 h-4" /> : <PanelRightClose className="w-4 h-4" />}
             </button>
           </div>
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          <div ref={codeScrollRef} className="flex-1 overflow-y-auto p-4 space-y-4">
             {codeBlocks.length === 0 ? (
               <div className="flex h-full min-h-48 items-center justify-center rounded-xl border border-dashed border-white/10 bg-white/5 text-sm text-muted-foreground">
                 {isGenerating ? "Analyzing..." : "No findings yet."}
@@ -210,6 +248,7 @@ export function AuditDashboard() {
               clearTrigger={clearTrigger}
               onRepoParsed={handleRepoParsed}
               onCodeParsed={handleCodeParsed}
+              streamedMessages={streamedMessages}
             />
           </div>
         </Panel>
