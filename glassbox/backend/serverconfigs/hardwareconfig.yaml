@@ -21,32 +21,60 @@ tools:
       Walk a cloned repository and return every C/C++ source file that
       already defines `gb_target_call(...)` (the GlassBox harness ABI).
 
-      You MUST call this BEFORE start_hardware_audit. Then:
-        * count > 0  -> show the user response.targets and proceed to
-                        start_hardware_audit with the same repo_root.
-        * count == 0 -> the repo is not natively harness-shaped. DO NOT
-                        give up and DO NOT ask the user to instrument
-                        their own code. Instead:
-                          1. Read the .cpp/.c files in the repo yourself.
-                          2. Pick one or more functions that look
-                             auditable (typical shapes: byte-buffer
-                             comparators, password / token verifiers,
-                             single-block crypto primitives -- anything
-                             pure with bounded runtime and ESP32-safe
-                             dependencies).
-                          3. For each candidate, call
-                             register_synthetic_target with just
-                             {repo_root, source_file, function_name}
-                             (and reference_hex if it's a 2-pointer
-                             comparator). The server will synthesize and
-                             write the harness wrapper for you.
-                          4. Re-call list_hardware_targets to confirm the
-                             synthetic targets now show up, then call
-                             start_hardware_audit.
+      DOMAIN FIT (read this first):
+      GlassBox audits cryptographic, authentication, parsing, and
+      comparison code on real ESP32 hardware -- functions that take
+      a byte buffer + length and behave deterministically in < ~100 ms
+      with no STL, no iostream, no dynamic allocation. It is NOT a
+      general-purpose code review tool. If the repo is a game, web app,
+      CLI tool, CRUD service, UI component, etc., it is OUT OF SCOPE
+      regardless of whether anything compiles.
+
+      You MUST call this BEFORE start_hardware_audit. Branch on the
+      result:
+
+        BRANCH A -- count > 0:
+          The repo is natively harness-shaped. Show the user
+          response.targets, then call start_hardware_audit.
+
+        BRANCH B -- count == 0 AND the repo plausibly contains
+        crypto/auth/parser/comparison code:
+          DO NOT give up. DO NOT tell the user to add gb_target_call
+          themselves -- that recommendation is FORBIDDEN. Instead:
+            1. For each .cpp/.c file in response.skipped, fetch its
+               contents (use the repo_context_server tools).
+            2. Identify functions whose signatures match one of the
+               three supported shapes:
+                 - int|bool|void f(const uint8_t* p, size_t n)
+                 - int|bool|void f(const uint8_t* a, const uint8_t* b, size_t n)
+                 - int f(const uint8_t* in, size_t in_len, uint8_t* out, size_t* out_len)
+            3. For each candidate, call register_synthetic_target with
+               {repo_root, source_file (relative), function_name}
+               (and reference_hex if it's a 2-pointer comparator).
+            4. Re-call list_hardware_targets to confirm the synthetic
+               wrappers now show up, then call start_hardware_audit.
+
+        BRANCH C -- count == 0 AND no candidate functions exist (the
+        repo is a game, web app, UI library, etc.):
+          The repo is OUT OF SCOPE for GlassBox. Tell the user EXACTLY
+          this kind of message (paraphrase, but keep the substance):
+            "This repo (<name>) is a <one-line classification: e.g.
+             console C++ game, Python web app, React UI library>.
+             GlassBox audits cryptographic, authentication, parsing, and
+             comparison code on real ESP32 hardware -- it doesn't apply
+             to <classification>. If you have a repo with crypto, auth,
+             token verification, or byte-buffer parsing code you'd like
+             audited, share that one instead."
+          DO NOT recommend adding gb_target_call. DO NOT recommend
+          'review for buffer overflows / memory leaks / input validation'
+          (that's not what GlassBox does). DO NOT offer a generic code
+          review.
 
       Every response includes `harness_abi_signature` and
-      `harness_abi_header` so you can describe the contract to the user
-      without guessing.
+      `harness_abi_header` for reference, but NEVER quote them to the
+      user as a "to make this work, add this function" instruction.
+      Their only purpose is internal: telling YOU what register_synthetic_target
+      synthesizes on the user's behalf.
     handler: "list_hardware_targets"
     input_schema:
       properties:
@@ -175,9 +203,14 @@ tools:
             "next_action": "list_hardware_targets"
           }
 
-      When you see error_code=no_targets, do NOT ask the user to modify
-      their code. Instead, read the source files, pick a candidate
-      function, call register_synthetic_target, then retry this tool.
+      When you see error_code=no_targets:
+        - If the repo plausibly contains crypto/auth/parser/comparison
+          code, follow Branch B in list_hardware_targets's description:
+          read the files, register_synthetic_target each candidate, retry.
+        - If the repo is OUT OF SCOPE (game, web app, UI library, etc.),
+          follow Branch C: tell the user it's not applicable to GlassBox.
+          DO NOT recommend they add gb_target_call themselves -- that
+          recommendation is FORBIDDEN.
     handler: "start_hardware_audit"
     input_schema:
       properties:

@@ -1057,3 +1057,460 @@ func writeJSONError(w http.ResponseWriter, code int, payload jsonErrorResponse) 
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(payload)
 }
+
+// -----------------------------------------------------------------------------
+// Synthetic-target registration: turn (file, function) into a flashable
+// gb_target.cpp shim. Called by the agent when list_hardware_targets
+// returned zero native matches, so we never leave the user with "no
+// findings, your repo isn't ready."
+// -----------------------------------------------------------------------------
+
+// fnParam is one parsed parameter from a C function declaration. We only
+// distinguish the categories we need to pick a wrapper template; we do
+// NOT try to be a full C++ parser.
+type fnParam struct {
+	Raw      string
+	Category string // byte_ptr_const | byte_ptr_mut | len | len_ptr | other
+}
+
+type parsedSignature struct {
+	ReturnType string
+	Params     []fnParam
+	Raw        string
+}
+
+type shapeUnsupportedError struct {
+	Got        string
+	GotParams  []string
+	Supported  []string
+	Suggestion string
+}
+
+func (e *shapeUnsupportedError) Error() string {
+	return fmt.Sprintf("unsupported signature shape: got %s", e.Got)
+}
+
+// stripParamName removes the trailing identifier from a parameter token
+// (so `const uint8_t* secret` becomes `const uint8_t*`). Defensive -- if
+// there's no obvious split, returns the input unchanged.
+func stripParamName(p string) string {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return p
+	}
+	for {
+		i := strings.LastIndexByte(p, '[')
+		j := strings.LastIndexByte(p, ']')
+		if i < 0 || j < 0 || j < i {
+			break
+		}
+		p = strings.TrimSpace(p[:i] + p[j+1:])
+	}
+	cut := -1
+	for i := len(p) - 1; i >= 0; i-- {
+		c := p[i]
+		if c == ' ' || c == '\t' || c == '*' || c == '&' {
+			cut = i
+			break
+		}
+	}
+	if cut < 0 {
+		return p
+	}
+	return strings.TrimSpace(p[:cut+1])
+}
+
+// classifyParam buckets one parameter token. Heuristic-based; we only
+// need to recognize the canonical byte-buffer / length forms.
+func classifyParam(raw string) fnParam {
+	t := strings.TrimSpace(raw)
+	t = strings.Join(strings.Fields(t), " ")
+	out := fnParam{Raw: t, Category: "other"}
+
+	typeOnly := stripParamName(t)
+	low := strings.ToLower(typeOnly)
+
+	switch {
+	case strings.Contains(low, "const") &&
+		(strings.Contains(low, "uint8_t*") ||
+			strings.Contains(low, "uint8_t *") ||
+			strings.Contains(low, "unsigned char*") ||
+			strings.Contains(low, "unsigned char *") ||
+			strings.Contains(low, "char*") ||
+			strings.Contains(low, "char *")):
+		out.Category = "byte_ptr_const"
+	case strings.Contains(low, "uint8_t*") ||
+		strings.Contains(low, "uint8_t *") ||
+		strings.Contains(low, "unsigned char*") ||
+		strings.Contains(low, "unsigned char *"):
+		out.Category = "byte_ptr_mut"
+	case strings.Contains(low, "size_t*") ||
+		strings.Contains(low, "size_t *"):
+		out.Category = "len_ptr"
+	case low == "size_t" ||
+		low == "unsigned int" ||
+		low == "unsigned long" ||
+		low == "int" ||
+		low == "long":
+		out.Category = "len"
+	}
+	return out
+}
+
+// splitTopLevelCommas splits a parameter list on commas, ignoring commas
+// inside parens or template angle brackets. Cheap and good enough.
+func splitTopLevelCommas(s string) []string {
+	out := []string{}
+	depth := 0
+	last := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(', '<', '[':
+			depth++
+		case ')', '>', ']':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				out = append(out, strings.TrimSpace(s[last:i]))
+				last = i + 1
+			}
+		}
+	}
+	tail := strings.TrimSpace(s[last:])
+	if tail != "" {
+		out = append(out, tail)
+	}
+	return out
+}
+
+// parseSimpleSignature finds and parses one declaration of fnName in src.
+// Returns shapeUnsupportedError if found-but-unrecognized; returns a plain
+// error if not found at all.
+func parseSimpleSignature(src, fnName string) (*parsedSignature, error) {
+	if !regexp.MustCompile(`\b` + regexp.QuoteMeta(fnName) + `\b`).MatchString(src) {
+		return nil, fmt.Errorf("function %q not found in source file", fnName)
+	}
+	re, err := regexp.Compile(fmt.Sprintf(fnSigRegexFmt, regexp.QuoteMeta(fnName)))
+	if err != nil {
+		return nil, fmt.Errorf("internal: bad signature regex: %w", err)
+	}
+	m := re.FindStringSubmatch(src)
+	if m == nil {
+		return nil, fmt.Errorf(
+			"function %q is present in source but no parseable forward decl/definition was found "+
+				"(supported return types: int, bool, void, uint8_t, size_t, char, long; "+
+				"single-line declarations only)",
+			fnName,
+		)
+	}
+	ret := strings.TrimSpace(m[1])
+	paramsRaw := strings.TrimSpace(m[2])
+	var params []fnParam
+	if paramsRaw != "" && paramsRaw != "void" {
+		for _, tok := range splitTopLevelCommas(paramsRaw) {
+			params = append(params, classifyParam(tok))
+		}
+	}
+	return &parsedSignature{
+		ReturnType: ret,
+		Params:     params,
+		Raw:        strings.TrimSpace(m[0]),
+	}, nil
+}
+
+// pickShape decides which wrapper template fits the parsed signature.
+// Returns (shape, nil) on a match; (_, *shapeUnsupportedError) otherwise.
+func pickShape(sig *parsedSignature) (string, error) {
+	cats := make([]string, len(sig.Params))
+	for i, p := range sig.Params {
+		cats[i] = p.Category
+	}
+	switch {
+	case len(cats) == 4 &&
+		cats[0] == "byte_ptr_const" && cats[1] == "len" &&
+		cats[2] == "byte_ptr_mut" && cats[3] == "len_ptr":
+		return "harness_native", nil
+	case len(cats) == 2 &&
+		cats[0] == "byte_ptr_const" && cats[1] == "len":
+		return "bytes_len", nil
+	case len(cats) == 3 &&
+		cats[0] == "byte_ptr_const" && cats[1] == "byte_ptr_const" && cats[2] == "len":
+		return "comparator_len", nil
+	}
+	rawCats := make([]string, len(sig.Params))
+	for i, p := range sig.Params {
+		rawCats[i] = p.Raw
+	}
+	return "", &shapeUnsupportedError{
+		Got:       fmt.Sprintf("%s(%s)", sig.ReturnType, strings.Join(rawCats, ", ")),
+		GotParams: rawCats,
+		Supported: []string{
+			"int|bool|void f(const uint8_t* p, size_t n)",
+			"int|bool|void f(const uint8_t* a, const uint8_t* b, size_t n)",
+			"int f(const uint8_t* in, size_t in_len, uint8_t* out, size_t* out_len)",
+		},
+		Suggestion: "Pick a different function in the same repo whose signature matches " +
+			"one of the supported shapes, or restructure the function under test to " +
+			"take (const uint8_t* secret, size_t len).",
+	}
+}
+
+// renderWrapper produces the full text of a synthesized gb_target.cpp.
+// The user's source is pulled in via #include of an absolute path -- this
+// is the simplest correct approach: no copy of function bodies, no risk
+// of getting linkage wrong, and the compiler tells us immediately if the
+// included file pulls in non-ESP-safe headers (we surface that error to
+// the agent via the audit result).
+func renderWrapper(shape, fnName, sourceAbs, targetName string,
+	sig *parsedSignature, ref []byte) (string, error) {
+
+	var b strings.Builder
+	b.WriteString("// AUTO-GENERATED by hardwarego/register_synthetic_target.\n")
+	b.WriteString("// Do not edit by hand -- re-register the target instead.\n")
+	b.WriteString("// Wrapper for: " + sig.Raw + "\n")
+	b.WriteString("// Shape: " + shape + "\n\n")
+	b.WriteString("#include <stddef.h>\n")
+	b.WriteString("#include <stdint.h>\n")
+	b.WriteString(fmt.Sprintf("#include %q\n\n", sourceAbs))
+	b.WriteString("#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n")
+
+	switch shape {
+	case "harness_native":
+		b.WriteString(fmt.Sprintf(
+			"int gb_target_call(const uint8_t* secret, size_t secret_len,\n"+
+				"                  uint8_t* out, size_t* out_len) {\n"+
+				"  return %s(secret, secret_len, out, out_len);\n"+
+				"}\n\n", fnName))
+
+	case "bytes_len":
+		b.WriteString(fmt.Sprintf(
+			"%s %s(const uint8_t*, size_t);\n\n", sig.ReturnType, fnName))
+		b.WriteString(fmt.Sprintf(
+			"int gb_target_call(const uint8_t* secret, size_t secret_len,\n"+
+				"                  uint8_t* out, size_t* out_len) {\n"+
+				"  %s rc = %s(secret, secret_len);\n"+
+				"  if (out && out_len && *out_len > 0) {\n"+
+				"    out[0] = (uint8_t)((int)rc & 0xff);\n"+
+				"    *out_len = 1;\n"+
+				"  }\n"+
+				"  return (int)rc;\n"+
+				"}\n\n", sig.ReturnType, fnName))
+
+	case "comparator_len":
+		if len(ref) == 0 {
+			return "", fmt.Errorf("comparator_len shape requires reference_hex (got empty)")
+		}
+		b.WriteString(fmt.Sprintf(
+			"%s %s(const uint8_t*, const uint8_t*, size_t);\n\n", sig.ReturnType, fnName))
+		b.WriteString("static const uint8_t kReference[] = {")
+		for i, by := range ref {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(fmt.Sprintf("0x%02x", by))
+		}
+		b.WriteString("};\n")
+		b.WriteString(fmt.Sprintf("static const size_t kReferenceLen = %d;\n\n", len(ref)))
+		b.WriteString(fmt.Sprintf(
+			"int gb_target_call(const uint8_t* secret, size_t secret_len,\n"+
+				"                  uint8_t* out, size_t* out_len) {\n"+
+				"  size_t n = secret_len < kReferenceLen ? secret_len : kReferenceLen;\n"+
+				"  %s rc = %s(secret, kReference, n);\n"+
+				"  if (out && out_len && *out_len > 0) {\n"+
+				"    out[0] = (uint8_t)((int)rc & 0xff);\n"+
+				"    *out_len = 1;\n"+
+				"  }\n"+
+				"  return (int)rc;\n"+
+				"}\n\n", sig.ReturnType, fnName))
+
+	default:
+		return "", fmt.Errorf("internal: unknown shape %q", shape)
+	}
+
+	b.WriteString(fmt.Sprintf(
+		"const char* gb_target_name(void) { return %q; }\n", targetName))
+	b.WriteString("\n#ifdef __cplusplus\n}\n#endif\n")
+	return b.String(), nil
+}
+
+// handleRegisterTarget is the new endpoint. Inputs are minimal (3 required
+// fields, 1 optional); the heavy lifting -- parse, classify, render,
+// write -- stays here so the agent doesn't have to ship a single line of
+// C++.
+func (s *server) handleRegisterTarget(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var req registerTargetRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, jsonErrorResponse{
+			Error: "bad json: " + err.Error(), ErrorCode: "bad_request",
+		})
+		return
+	}
+	repo := strings.TrimSpace(req.RepoRoot)
+	srcRel := strings.TrimSpace(req.SourceFile)
+	fn := strings.TrimSpace(req.FunctionName)
+	if repo == "" || srcRel == "" || fn == "" {
+		writeJSONError(w, http.StatusBadRequest, jsonErrorResponse{
+			Error:     "repo_root, source_file, and function_name are all required",
+			ErrorCode: "bad_request",
+		})
+		return
+	}
+	if !dirExists(repo) {
+		writeJSONError(w, http.StatusBadRequest, jsonErrorResponse{
+			Error: "repo_root does not exist: " + repo, ErrorCode: "bad_request",
+		})
+		return
+	}
+
+	srcAbs := filepath.Clean(filepath.Join(repo, srcRel))
+	repoClean := filepath.Clean(repo)
+	if srcAbs != repoClean &&
+		!strings.HasPrefix(srcAbs, repoClean+string(os.PathSeparator)) {
+		writeJSONError(w, http.StatusBadRequest, jsonErrorResponse{
+			Error: "source_file must be inside repo_root", ErrorCode: "bad_request",
+		})
+		return
+	}
+	if !fileExists(srcAbs) {
+		writeJSONError(w, http.StatusBadRequest, jsonErrorResponse{
+			Error: "source_file does not exist: " + srcAbs, ErrorCode: "source_not_found",
+		})
+		return
+	}
+
+	cIdent := regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	if !cIdent.MatchString(fn) {
+		writeJSONError(w, http.StatusBadRequest, jsonErrorResponse{
+			Error:     "function_name is not a valid C identifier: " + fn,
+			ErrorCode: "bad_request",
+		})
+		return
+	}
+	target := strings.TrimSpace(req.TargetName)
+	if target == "" {
+		target = fn
+	}
+	if !cIdent.MatchString(target) {
+		writeJSONError(w, http.StatusBadRequest, jsonErrorResponse{
+			Error:     "target_name is not a valid C identifier: " + target,
+			ErrorCode: "bad_request",
+		})
+		return
+	}
+
+	src, err := readUpTo(srcAbs, maxRepoFileSize)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, jsonErrorResponse{
+			Error: "read source_file: " + err.Error(), ErrorCode: "io_error",
+		})
+		return
+	}
+
+	sig, err := parseSimpleSignature(string(src), fn)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, jsonErrorResponse{
+			Error:     err.Error(),
+			ErrorCode: "function_not_found",
+			Hint: "Confirm function_name appears as a single-line declaration or " +
+				"definition in source_file, with one of the supported return types " +
+				"(int, bool, void, uint8_t, size_t, char, long).",
+		})
+		return
+	}
+
+	shape, err := pickShape(sig)
+	if err != nil {
+		var unsup *shapeUnsupportedError
+		if errors.As(err, &unsup) {
+			writeJSONError(w, http.StatusBadRequest, jsonErrorResponse{
+				Error:     err.Error(),
+				ErrorCode: "unsupported_signature",
+				Details: map[string]any{
+					"parsed_signature": sig.Raw,
+					"got_params":       unsup.GotParams,
+					"supported_shapes": unsup.Supported,
+				},
+				Hint: unsup.Suggestion,
+			})
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, jsonErrorResponse{
+			Error: "shape selection: " + err.Error(), ErrorCode: "internal_error",
+		})
+		return
+	}
+
+	var refBytes []byte
+	if shape == "comparator_len" {
+		refHex := strings.TrimSpace(req.ReferenceHex)
+		if refHex == "" {
+			writeJSONError(w, http.StatusBadRequest, jsonErrorResponse{
+				Error:     "comparator_len shape requires reference_hex",
+				ErrorCode: "missing_reference",
+				Hint: "Provide reference_hex as the constant the function compares secret " +
+					"against (the value an attacker is trying to recover). Example: " +
+					"reference_hex=\"676c617373626f78\".",
+			})
+			return
+		}
+		refBytes, err = hex.DecodeString(refHex)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, jsonErrorResponse{
+				Error:     "reference_hex is not valid hex: " + err.Error(),
+				ErrorCode: "bad_request",
+			})
+			return
+		}
+		if len(refBytes) == 0 || len(refBytes) > maxReferenceLen {
+			writeJSONError(w, http.StatusBadRequest, jsonErrorResponse{
+				Error: fmt.Sprintf("reference_hex must decode to 1..%d bytes, got %d",
+					maxReferenceLen, len(refBytes)),
+				ErrorCode: "bad_request",
+			})
+			return
+		}
+	}
+
+	wrapper, err := renderWrapper(shape, fn, srcAbs, target, sig, refBytes)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, jsonErrorResponse{
+			Error: "render wrapper: " + err.Error(), ErrorCode: "internal_error",
+		})
+		return
+	}
+
+	syntheticDir := filepath.Join(repo, syntheticDirName)
+	if err := os.MkdirAll(syntheticDir, 0o755); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, jsonErrorResponse{
+			Error: "mkdir synthetic dir: " + err.Error(), ErrorCode: "io_error",
+		})
+		return
+	}
+	wrapperPath := filepath.Join(syntheticDir, target+".cpp")
+	if err := os.WriteFile(wrapperPath, []byte(wrapper), 0o644); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, jsonErrorResponse{
+			Error: "write wrapper: " + err.Error(), ErrorCode: "io_error",
+		})
+		return
+	}
+	wrapperRel, _ := filepath.Rel(repo, wrapperPath)
+
+	log.Printf("[register] %s::%s -> %s (shape=%s)", srcRel, fn, wrapperPath, shape)
+
+	writeJSON(w, http.StatusOK, registerTargetResponse{
+		RepoRoot:          repo,
+		SourceFile:        srcRel,
+		FunctionName:      fn,
+		ShapeUsed:         shape,
+		WrapperPath:       wrapperPath,
+		WrapperRelPath:    wrapperRel,
+		ParsedSignature:   sig.Raw,
+		HarnessABISigUsed: harnessABISignature,
+	})
+}
