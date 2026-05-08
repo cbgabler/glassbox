@@ -195,8 +195,7 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Clear chat context for next audit
-	s.chat = chat.NewChat("session-1", 50)
+	s.setChat(chat.NewChat("session-1", 50))
 	log.Println("Chat context cleared")
 
 	w.Header().Set("Content-Type", "application/json")

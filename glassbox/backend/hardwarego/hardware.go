@@ -1021,10 +1021,23 @@ func (a *audit) markCancelled(idx int) {
 	defer a.mu.Unlock()
 	a.state = "cancelled"
 	a.errorMsg = "cancelled by user"
+	now := time.Now().UTC().Format(time.RFC3339)
 	for i := idx; i < len(a.results); i++ {
-		if a.results[i].State == "queued" || a.results[i].State == "recovery_wait" || a.results[i].State == "" {
-			a.results[i].State = "cancelled"
-			a.results[i].FinishedAt = time.Now().UTC().Format(time.RFC3339)
+		// Skip targets that already reached a terminal state. Anything
+		// else -- including the active target mid-stage (install/ct_lint/
+		// flash/collect/analyze) -- needs to be marked cancelled so the
+		// status snapshot doesn't leave a non-terminal entry hanging.
+		st := a.results[i].State
+		if st == "pass" || st == "fail" || st == "skipped" || st == "cancelled" {
+			continue
+		}
+		a.results[i].State = "cancelled"
+		if a.results[i].StartedAt == "" {
+			a.results[i].StartedAt = now
+		}
+		a.results[i].FinishedAt = now
+		if a.results[i].Reason == "" {
+			a.results[i].Reason = "cancelled by user"
 		}
 	}
 }

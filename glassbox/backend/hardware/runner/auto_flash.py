@@ -186,15 +186,29 @@ def _run_streaming(cmd: List[str], *, cwd: Optional[str] = None,
         return 127
     deadline = time.monotonic() + timeout
     assert p.stdout is not None
+
+    def _reap() -> None:
+        # Drain the kill so we don't leave a zombie. wait() with a small
+        # timeout because kill() is asynchronous on POSIX and the child
+        # might need a tick to actually exit.
+        try:
+            p.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        except Exception:
+            pass
+
     try:
         for line in p.stdout:
             print("    | " + line.rstrip())
             if time.monotonic() > deadline:
                 p.kill()
+                _reap()
                 print(f"    timed out after {timeout:.0f}s; killed.")
                 return 124
     except KeyboardInterrupt:                                  # pragma: no cover
         p.kill()
+        _reap()
         raise
     return p.wait()
 

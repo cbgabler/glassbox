@@ -17,6 +17,14 @@ import (
 const defaultMaxEntries = 500
 const defaultMaxLines = 200
 
+// maxRepoFileSize bounds how many bytes readRepoFile will load into memory
+// for a single request. 4 MiB comfortably covers any normal source file
+// (even generated/concatenated ones); anything larger almost certainly
+// isn't the kind of file the agent should be quoting in chat context, and
+// loading it is a memory-pressure footgun (a 4 GiB binary in a cloned repo
+// would otherwise be slurped whole by os.ReadFile).
+const maxRepoFileSize = 4 * 1024 * 1024
+
 type CloneRequest struct {
 	GitURL string `json:"git_url"`
 	Path   string `json:"path"`
@@ -533,6 +541,11 @@ func readRepoFile(req RepoContextRequest, repoRoot string) (FileResponse, error)
 	}
 	if info.IsDir() {
 		return FileResponse{}, fmt.Errorf("path is a directory: %s", req.FilePath)
+	}
+	if info.Size() > maxRepoFileSize {
+		return FileResponse{}, fmt.Errorf(
+			"file too large: %d bytes exceeds limit of %d",
+			info.Size(), maxRepoFileSize)
 	}
 
 	content, err := os.ReadFile(filePath)
