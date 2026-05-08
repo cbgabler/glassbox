@@ -43,6 +43,14 @@ func (h *Hub) remove(c *websocket.Conn) {
 	c.Close()
 }
 
+// count returns the current connected client count. Takes the read lock so
+// callers don't race against add/remove.
+func (h *Hub) count() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.clients)
+}
+
 // Broadcast sends any value as JSON to all connected WS clients.
 func (h *Hub) Broadcast(v any) {
 	data, err := json.Marshal(v)
@@ -87,8 +95,27 @@ var upgrader = websocket.Upgrader{
 type Server struct {
 	ag       *agent.Agent
 	provider transport.Provider
-	chat     *chat.Chat
-	hub      *Hub
+
+	// chatMu guards chat. handleChat snapshots the pointer for the duration
+	// of one request; handleDone replaces it on cleanup. Without this, the
+	// pointer write in handleDone races concurrent reads in handleChat
+	// (the race detector flags it).
+	chatMu sync.RWMutex
+	chat   *chat.Chat
+
+	hub *Hub
+}
+
+func (s *Server) getChat() *chat.Chat {
+	s.chatMu.RLock()
+	defer s.chatMu.RUnlock()
+	return s.chat
+}
+
+func (s *Server) setChat(c *chat.Chat) {
+	s.chatMu.Lock()
+	s.chat = c
+	s.chatMu.Unlock()
 }
 
 // POST /chat — same logic as the CLI loop, just over HTTP
@@ -106,14 +133,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.provider.SendRequest(s.chat, s.ag, body.Message); err != nil {
+	chatInstance := s.getChat()
+	if err := s.provider.SendRequest(chatInstance, s.ag, body.Message); err != nil {
 		log.Printf("Error: %v", err)
 		s.hub.Broadcast(map[string]string{"type": "error", "message": err.Error()})
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	messages := s.chat.GetMessages()
+	messages := chatInstance.GetMessages()
 	log.Printf("Chat request complete, total messages: %d", len(messages))
 
 	if len(messages) == 0 {
@@ -135,7 +163,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.hub.add(conn)
-	log.Printf("[WS] client connected: %s, total clients: %d", conn.RemoteAddr(), len(s.hub.clients))
+	log.Printf("[WS] client connected: %s, total clients: %d", conn.RemoteAddr(), s.hub.count())
 
 	go func() {
 		defer func() {

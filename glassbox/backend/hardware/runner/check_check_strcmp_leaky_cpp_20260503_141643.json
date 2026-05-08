@@ -1,0 +1,53 @@
+{
+  "schema_version": 2,
+  "run_id": "check_strcmp_leaky_cpp_20260503_141643",
+  "created_at": "2026-05-03T21:16:43Z",
+  "source": {
+    "kind": "hardware_prep_scan",
+    "path": "/Users/carsongabler/glassbox/glassbox/backend/hardware/runner/targets/scripts/cpp/strcmp_leaky.cpp",
+    "language": "cpp"
+  },
+  "verdict": "static_warning",
+  "findings": [
+    {
+      "id": "f_001",
+      "type": "static",
+      "severity": "HIGH",
+      "title": "[CT001] `if` condition reads a secret-named value",
+      "detail": "Static analysis on `/Users/carsongabler/glassbox/glassbox/backend/hardware/runner/targets/scripts/cpp/strcmp_leaky.cpp:18` flagged a likely side-channel pattern before flashing. Rule CT001.\n\n```c\n    if (secret[i] != kReference[i]) {\n```",
+      "data": {
+        "rule_id": "CT001",
+        "excerpt": "    if (secret[i] != kReference[i]) {",
+        "suggested_campaign": "match_vs_random",
+        "suggested_reference_hex": "676c617373626f78"
+      },
+      "remediation": "Replace the conditional with a constant-time mask: compute both branches and select with `(mask & a) | (~mask & b)`.",
+      "source": {
+        "file": "/Users/carsongabler/glassbox/glassbox/backend/hardware/runner/targets/scripts/cpp/strcmp_leaky.cpp",
+        "line": 18,
+        "col": 5
+      }
+    }
+  ],
+  "findings_summary": {
+    "total": 1,
+    "by_severity": {
+      "CRITICAL": 0,
+      "HIGH": 1,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "INFO": 0,
+      "pass": 0
+    },
+    "by_type": {
+      "tvla": 0,
+      "crash": 0,
+      "non_determinism": 0,
+      "length_oracle": 0,
+      "memory_corruption": 0,
+      "static": 1,
+      "cpa_key_recovery": 0
+    },
+    "worst_severity": "HIGH"
+  }
+}
