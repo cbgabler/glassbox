@@ -467,6 +467,15 @@ void loop() {
   uint32_t branches = b1 - b0;
   uint32_t micros_  = (uint32_t)(us1 - us0);
 
+  // hex_output is sized for sizeof(gb.output) bytes (= 64). If user code
+  // sets *out_len greater than that, hex_encode would write past the end
+  // of the on-stack buffer and corrupt the return address. Cap and warn.
+  if (out_len > sizeof(gb.output)) {
+    Serial.printf("ERR out_len=%u exceeds output buffer (%u)\n",
+                  (unsigned)out_len, (unsigned)sizeof(gb.output));
+    return;
+  }
+
   char hex_output[2 * sizeof(gb.output) + 1];
   hex_encode(output, out_len, hex_output);
 

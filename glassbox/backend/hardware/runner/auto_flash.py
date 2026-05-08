@@ -295,19 +295,27 @@ def flash_arduino_cli(sketch_dir: str, fqbn: str, port: str,
 
     # Bridged path: compile to a known directory, then call esptool with
     # --before no-reset so it doesn't fight the Pico's bridge.
+    #
+    # build_dir lives only for the duration of this call -- it holds the
+    # freshly compiled .bin/.elf which esptool needs as input. Wrap the
+    # whole compile + flash in try/finally so the tempdir is removed on
+    # success, on compile failure, on flash failure, and on exception.
     build_dir = tempfile.mkdtemp(prefix="glassbox-build-")
-    print(f"[auto_flash] arduino-cli: compile {sketch_dir} (fqbn={fqbn}) -> {build_dir}")
-    rc = _run_streaming(
-        ["arduino-cli", "compile", "--fqbn", fqbn,
-         "--output-dir", build_dir, sketch_dir],
-        timeout=timeout,
-    )
-    if rc != 0:
-        print(f"[auto_flash] arduino-cli compile FAILED (rc={rc}).")
-        return rc
-    # Use a generous esptool-side timeout: writing ~300 KB at 115200 SLIP-encoded
-    # is ~30-60 s; double that to absorb retry attempts on a noisy port.
-    return _flash_esptool_via_bridge(build_dir, fqbn, port, timeout=max(timeout, 360.0))
+    try:
+        print(f"[auto_flash] arduino-cli: compile {sketch_dir} (fqbn={fqbn}) -> {build_dir}")
+        rc = _run_streaming(
+            ["arduino-cli", "compile", "--fqbn", fqbn,
+             "--output-dir", build_dir, sketch_dir],
+            timeout=timeout,
+        )
+        if rc != 0:
+            print(f"[auto_flash] arduino-cli compile FAILED (rc={rc}).")
+            return rc
+        # Use a generous esptool-side timeout: writing ~300 KB at 115200 SLIP-encoded
+        # is ~30-60 s; double that to absorb retry attempts on a noisy port.
+        return _flash_esptool_via_bridge(build_dir, fqbn, port, timeout=max(timeout, 360.0))
+    finally:
+        shutil.rmtree(build_dir, ignore_errors=True)
 
 
 def _flash_esptool_via_bridge(build_dir: str, fqbn: str, port: str,
