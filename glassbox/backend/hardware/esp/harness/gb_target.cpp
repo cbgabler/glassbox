@@ -31,11 +31,23 @@ static const uint8_t kSbox[256] = {
 extern "C" int gb_target_call(const uint8_t* secret, size_t secret_len,
                               uint8_t* out, size_t* out_len) {
 
+  // Reject too-short inputs up front. The post-comparator code below
+  // reads secret[0..3] unconditionally; without this guard, any input
+  // shorter than 4 bytes would read past the caller's buffer (OOB read,
+  // undefined behavior). The ct_lint rules we WANT this file to
+  // demonstrate (CT001..CT007) all still fire below; this just avoids
+  // crashing the harness on short fuzz inputs.
+  if (secret_len < kVaultPinLen) {
+    out[0] = 0;
+    *out_len = 1;
+    return 1;
+  }
+
   // -------------------------------------------------------------------------
   // CT001 + CT002: early-exit PIN check (the classic timing leak).
   // Loop bails on first mismatching byte; then calls memcmp for good measure.
   // -------------------------------------------------------------------------
-  size_t n = secret_len < kVaultPinLen ? secret_len : kVaultPinLen;
+  size_t n = kVaultPinLen;
   for (size_t i = 0; i < n; ++i) {
     if (secret[i] != kVaultPin[i]) {   // CT001: branch on secret
       out[0] = 0;
@@ -51,8 +63,13 @@ extern "C" int gb_target_call(const uint8_t* secret, size_t secret_len,
     return 1;
   }
 
-  // CT002 again: strcmp variant just to get two CT002 hits.
-  if (strcmp((const char*)secret, (const char*)kVaultPin) != 0) {  // CT002
+  // CT002 again: a second variable-time byte compare to get a second
+  // CT002 hit. The original demo used strcmp() here, but strcmp on a
+  // raw byte buffer that isn't guaranteed NUL-terminated is undefined
+  // behavior (it can run off the end of the input buffer). bcmp is
+  // also a variable-time comparator on most libc implementations, so
+  // ct_lint's CT002 rule fires on it too.
+  if (bcmp(secret, kVaultPin, n) != 0) {  // CT002
     out[0] = 0;
     *out_len = 1;
     return 1;
