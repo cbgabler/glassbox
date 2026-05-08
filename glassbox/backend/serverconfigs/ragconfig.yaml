@@ -5,7 +5,7 @@ description: "Go-based vector database for semantic search over audit findings a
 # Runtime configuration
 runtime:
   type: "python"
-  command: "python3"
+  command: "c:\\Users\\antho\\glassbox2\\glassbox2\\glassbox\\backend\\ragserver\\.venv\\Scripts\\python.exe"
   args:
     [
       "-m",

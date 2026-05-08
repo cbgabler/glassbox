@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 
 	agent "github.com/AnthonyL103/GOMCP/Agent"
@@ -42,9 +43,23 @@ func buildcommand(config *server.RuntimeConfig) (string, []string, error) {
 		if len(args) == 0 {
 			return "", nil, fmt.Errorf("python runtime requires args (script path or -m module)")
 		}
-		if args[0] != "-m" && !strings.HasSuffix(strings.ToLower(args[0]), ".py") {
+		if runtime.GOOS == "windows" {
+			if cmd == "python3" || cmd == "python" {
+				cmd = "py"
+				args = append([]string{"-3"}, args...)
+			}
+		}
+		launcherOffset := 0
+		if cmd == "py" && len(args) > 0 && strings.HasPrefix(args[0], "-") {
+			launcherOffset = 1
+		}
+		if len(args) > launcherOffset && args[launcherOffset] != "-m" && !strings.HasSuffix(strings.ToLower(args[launcherOffset]), ".py") {
 			// Treat as module
-			args = append([]string{"-m"}, args...)
+			if launcherOffset == 0 {
+				args = append([]string{"-m"}, args...)
+			} else {
+				args = append(args[:launcherOffset], append([]string{"-m"}, args[launcherOffset:]...)...)
+			}
 		}
 		return cmd, args, nil
 

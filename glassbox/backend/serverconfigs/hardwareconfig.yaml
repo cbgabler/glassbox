@@ -13,7 +13,7 @@ description: "Runs the GlassBox ESP32 TVLA + CPA scan against a cloned repo and 
 runtime:
   type: "go"
   command: "go"
-  args: ['hardwarego/hardware.go']
+  args: ['./hardwarego']
   port: 8084
 
 # Tools provided by this server
